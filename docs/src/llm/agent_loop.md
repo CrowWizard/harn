@@ -125,6 +125,43 @@ missing-tool-call claim also includes `tool_name`. The ACP extension projection
 uses `turnClaimedForRepair` and `toolName`. Event-log, replay, and evaluation
 consumers can use these fields without matching the injected feedback text.
 
+### Missing tool-call recovery
+
+`missing_tool_call_recovery` defaults to enabled for provider-backed loops.
+It classifies assistant text when the parser found no call and recovery remains
+eligible. A successful native tool call or an active completion judge owns the
+terminal turn, so recovery doesn't classify that turn again.
+
+The classifier asks one boolean intent question and one choice over candidate
+tools through `harness.llm.evaluate_request`. Without `evaluation`, it uses
+`structured_llm` on the loop's provider and model, including any classifier
+`provider` or `model` override. A route declaring a native decision protocol
+selects `native_decision`. An explicit `evaluation: EvaluationPolicy`
+selects the route and backend, including `native_decision`. Native evaluation
+requires conservative run budget authority from the start of the run.
+
+On the inherited chat route, classifier `max_tokens` defaults to `192`,
+`temperature` to `0.0`, and `effort` to `none`. Optional `top_p`, `seed`, and
+`timeout_ms` retain their transport meanings. An explicit `evaluation` supplies
+its own chat settings. Automatically selected native policies omit chat defaults;
+explicit chat settings remain in the evaluation policy and native evaluation
+refuses them without a recovery nudge.
+
+`confidence_threshold` defaults to `0.65`. Recovery requires both intent and
+target confidence to meet that floor. A confident negative intent doesn't need
+a confident target. The evaluator policy threshold is set to zero so the
+consumer can apply those rules to both answers. Refused or unavailable answers
+produce `ambiguous`; cancellation propagates. Each live verdict includes the
+closed `decision` outcome and its evaluation receipt reference.
+
+`classifier` accepts a typed `MissingToolCallClassifier` for deterministic
+consumer fixtures. Fixture verdicts are explicit records; assistant wording
+doesn't manufacture their labels. Fixture success doesn't measure model quality.
+See [Decision evaluation](../predicates.md#runtime-vocabulary-and-routes) for
+the policy, request limits, telemetry, and backend confidence meanings.
+
+### LLM result counters
+
 Nested `llm` fields:
 
 | Field | Type | Description |
@@ -1300,6 +1337,13 @@ when it reaches its next terminal decision.
 
 A callback that throws is attempted once. If it also fails while recording a
 thrown loop error, the propagated error retains both causes.
+
+`std/agent/failure_types` names the loop's structured errors. The
+`AgentLoopTerminalCallbackFailure` record carries `cause.terminal_error` and
+`cause.callback_error`. `AgentLoopProtocolFailure` identifies an empty provider
+request refused before dispatch. `AgentLoopFailure` combines those records
+with `AgentLoopCancelledFailure` and the loop's string errors. Misspelled or
+missing record fields fail checking.
 
 ### Example with retry
 
