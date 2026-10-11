@@ -689,23 +689,19 @@ pub(super) async fn host_agent_dispatch_tool_call(
             .map(helpers::vm_value_to_json)
             .unwrap_or(serde_json::Value::Null)
     };
-    let mut tool_name = match call.get("name") {
-        Some(VmValue::String(name)) if !name.trim().is_empty() => name.to_string(),
-        // A missing name is a recoverable parse slip, not a reason to abort the loop.
-        _ => {
-            let denied = agent_primitive_denied_tool(
-                "<unnamed>",
-                &tool_id,
-                &raw_args_json(),
-                "Tool call is missing a name. Emit one tool call per turn as \
-                 `name({ ... })` using a non-empty tool name from the allowed \
-                 list, then retry.",
-                crate::agent_events::ToolCallErrorCategory::SchemaValidation,
-                None,
-                None,
-            );
-            return Ok(json_to_vm_value(&denied));
-        }
+    // Invalid tool identity is recoverable feedback, not a reason to abort the loop.
+    let Some(mut tool_name) = primitive_args::qualified_tool_name(&call) else {
+        let denied = agent_primitive_denied_tool(
+            "<unnamed>",
+            &tool_id,
+            &raw_args_json(),
+            "Tool call needs a non-empty name and, when present, a non-empty \
+                 string toolset_name. Emit one allowed tool call per turn, then retry.",
+            crate::agent_events::ToolCallErrorCategory::SchemaValidation,
+            None,
+            None,
+        );
+        return Ok(json_to_vm_value(&denied));
     };
     tools::recover_provider_safe_alias(&mut tool_name, tools);
     let mut tool_args = tools::normalize_tool_args(&tool_name, raw_args_json(), tools);

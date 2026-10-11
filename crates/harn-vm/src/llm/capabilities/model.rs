@@ -497,6 +497,8 @@ pub enum ComputerUseStyle {
     Grounded,
     /// The plain function-schema `computer` tool (the universal default).
     Function,
+    /// Anthropic `computer_toolset_20260801` with namespaced member calls.
+    NativeAnthropicToolset,
 }
 
 /// Screenshot downscaling policy applied before an image reaches the model (the
@@ -862,6 +864,9 @@ pub struct Capabilities {
     /// Portable generation options that this route permits normally but fixes
     /// to provider-owned values while reasoning is enabled.
     pub reasoning_excluded_portable_options: Vec<super::PortableOption>,
+    /// See [`ProviderRule::portable_option_effort_support`].
+    pub portable_option_effort_support:
+        BTreeMap<super::PortableOption, Vec<super::ReasoningEffort>>,
     pub seed_supported: bool,
     pub top_k_supported: bool,
     pub temperature_supported: bool,
@@ -1006,6 +1011,7 @@ impl Default for Capabilities {
             reasoning_text_promotable: false,
             reasoning_wire_format: None,
             reasoning_excluded_portable_options: Vec::new(),
+            portable_option_effort_support: BTreeMap::new(),
             seed_supported: true,
             top_k_supported: true,
             temperature_supported: true,
