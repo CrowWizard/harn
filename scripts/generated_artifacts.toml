@@ -49,6 +49,7 @@ exempt_checks = [
   "check-provider-catalog-drift-core", # refresh and notice behavior without the nested sandbox proof
   "check-source-file-lengths",      # merge-base repo source LOC ratchet, not a generated mirror
   "check-stack-frames",             # re-entrant stack-frame budget ratchet, not a generated mirror
+  "check-parser-stack",             # recursive parser stack budget in debug and release
   "check-test-target-coverage",     # census that hand-listed test files are run by a CI target, not a generated mirror
   "check-gate-path-visibility",     # ratchet on the negated fs.exists guard in gate scripts, not a sync guard
   "check-python-boundary",          # repo-language boundary ratchet, not a sync guard
@@ -716,6 +717,8 @@ make_all = false  # excluded from `make all` for the same reason (no sibling che
 # file-drift scan: a stale binary or a warm target directory reports the
 # previous threshold rather than this tree.
 "check-stack-frames" = "excluded"
+# Compiles debug and release test binaries; the required CI aggregate owns it.
+"check-parser-stack" = "excluded"
 "check-test-target-coverage" = "source"
 "check-gate-path-visibility" = "source"
 "check-python-boundary" = "source"
