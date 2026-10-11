@@ -47,8 +47,8 @@ pub(crate) struct EvaluationPolicy {
     pub backend: BackendKind,
     pub provider: String,
     pub model: String,
-    pub effort: String,
-    pub temperature: f64,
+    pub effort: Option<String>,
+    pub temperature: Option<f64>,
     pub max_tokens: Option<i64>,
     pub top_p: Option<f64>,
     pub seed: Option<i64>,
@@ -111,16 +111,14 @@ impl EvaluationPolicy {
             backend,
             provider: text("provider")?,
             model: text("model")?,
-            effort: if fields.contains_key("effort") {
-                text("effort")?
-            } else {
-                "none".into()
-            },
-            temperature: if fields.contains_key("temperature") {
-                number("temperature")?
-            } else {
-                0.0
-            },
+            effort: fields
+                .contains_key("effort")
+                .then(|| text("effort"))
+                .transpose()?,
+            temperature: fields
+                .contains_key("temperature")
+                .then(|| number("temperature"))
+                .transpose()?,
             max_tokens: optional_int("max_tokens")?,
             top_p: fields
                 .contains_key("top_p")
@@ -150,7 +148,7 @@ impl EvaluationPolicy {
         };
         if !policy.threshold.is_finite()
             || !(0.0..=1.0).contains(&policy.threshold)
-            || !policy.temperature.is_finite()
+            || policy.temperature.is_some_and(|value| !value.is_finite())
             || policy.max_tokens.is_some_and(|limit| limit <= 0)
             || policy.timeout_ms.is_some_and(|limit| limit <= 0)
             || policy
@@ -168,6 +166,17 @@ impl EvaluationPolicy {
                     .into(),
             );
         }
+        // Admit explicit chat effort before cache lookup, where an invalid
+        // string must never alias the identity of an omitted option.
+        if policy.backend == BackendKind::StructuredLlm {
+            if let Some(effort) = policy.effort.as_deref() {
+                crate::llm::helpers::parse_reasoning_effort_field(
+                    "evaluation policy effort",
+                    effort,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
         Ok(policy)
     }
 
@@ -180,8 +189,18 @@ impl EvaluationPolicy {
             self.backend.as_str().to_string(),
             self.provider.clone(),
             self.model.clone(),
-            self.effort.clone(),
-            format!("{:?}", self.temperature),
+            match (self.backend, self.effort.as_deref()) {
+                (BackendKind::NativeDecision, None) => "none".into(),
+                (_, None) => "unset".into(),
+                (_, Some(value)) => value.to_string(),
+            },
+            match (self.backend, self.temperature) {
+                // Native requests never emit sampling. Retain the identity of
+                // existing tapes when the omitted option has no wire effect.
+                (BackendKind::NativeDecision, None) => "0.0".into(),
+                (_, None) => "unset".into(),
+                (_, Some(value)) => format!("{value:?}"),
+            },
             self.native_options_supplied.to_string(),
             format!("{:?}", self.threshold),
             format!("{:?}", self.evaluation_cost_limit),
@@ -543,7 +562,7 @@ async fn evaluate_live(
             state: &state,
             questions: &questions,
             contract: &route,
-            effort: &policy.effort,
+            effort: policy.effort.as_deref(),
             temperature: policy.temperature,
             max_tokens: policy.max_tokens,
             top_p: policy.top_p,
@@ -757,7 +776,7 @@ async fn dispatch(
         state: &evaluation.state,
         questions: &evaluation.questions,
         contract: route,
-        effort: &evaluation.policy.effort,
+        effort: evaluation.policy.effort.as_deref(),
         temperature: evaluation.policy.temperature,
         max_tokens: evaluation.policy.max_tokens,
         top_p: evaluation.policy.top_p,

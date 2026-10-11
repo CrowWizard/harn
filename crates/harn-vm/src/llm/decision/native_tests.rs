@@ -55,8 +55,8 @@ fn native_routes_project_wire_answers_and_refuse_partial_tapes() {
             state: &state,
             questions: &questions,
             contract: &contract,
-            effort: "none",
-            temperature: 0.0,
+            effort: Some("none"),
+            temperature: Some(0.0),
             max_tokens: None,
             top_p: None,
             seed: None,
@@ -191,7 +191,7 @@ fn native_routes_project_wire_answers_and_refuse_partial_tapes() {
             })
         ));
         let unsupported_request = DecisionRequest {
-            temperature: 0.5,
+            temperature: Some(0.5),
             ..request
         };
         assert!(matches!(

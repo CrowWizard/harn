@@ -1113,7 +1113,7 @@ default_provider = "openai"
         init["result"]["agentCapabilities"]["promptCapabilities"],
         json!({
             "image": true,
-            "audio": true,
+            "audio": false,
             "embeddedContext": false,
         })
     );
