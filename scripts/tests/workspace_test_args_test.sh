@@ -49,20 +49,38 @@ cat > "$scratch/bin/cargo-nextest" <<'SH'
 set -euo pipefail
 case "$*" in
   'nextest list '*)
-    jq -n --arg status "${MATCH_STATUS:-matches}" '{"rust-suites": {fixture: {testcases: {case: {ignored: false, "filter-match": {status: $status}}}}}}'
+    printf '%s\n' "$*" > "$LISTED_TESTS"
+    jq -n --arg status "${MATCH_STATUS:-matches}" '{"test-count": 1, "rust-suites": {fixture: {status: "listed", "package-name": "fixture", "binary-name": "fixture", testcases: {case: {ignored: false, "filter-match": {status: $status}}}}, excluded: {status: "skipped"}}}'
     ;;
   'nextest run '*) printf '%s\n' "$*" > "$RAN_TESTS" ;;
   *) exit 9 ;;
 esac
 SH
 chmod +x "$scratch/bin/cargo-nextest"
-export PATH="$scratch/bin:$PATH" RAN_TESTS="$scratch/ran"
+export PATH="$scratch/bin:$PATH" RAN_TESTS="$scratch/ran" LISTED_TESTS="$scratch/listed"
+export RUNNER_TEMP="$scratch"
 GITHUB_EVENT_NAME=push bash "$root/scripts/ci/run_workspace_tests.sh" count:3/3 > "$scratch/log"
+jq -e '.["rust-suites"].fixture.testcases.case["filter-match"].status == "matches"' "$RUNNER_TEMP/harn-nextest-inventory.json" > /dev/null
 grep -q 'eligible=1' "$scratch/log"
 grep -q -- '--partition count:3/3 --no-tests pass' "$scratch/ran"
 rm "$scratch/ran"
 if MATCH_STATUS=mismatch GITHUB_EVENT_NAME=push bash "$root/scripts/ci/run_workspace_tests.sh" count:3/3 > "$scratch/log" 2>&1; then
   echo 'An empty eligible suite was accepted' >&2; exit 1
+fi
+[[ ! -e "$scratch/ran" ]]
+jq -e '.["rust-suites"].fixture.testcases.case["filter-match"].status == "mismatch"' "$RUNNER_TEMP/harn-nextest-inventory.json" > /dev/null
+GITHUB_WORKSPACE="$scratch/repo" bash "$root/scripts/ci/run_workspace_tests.sh" all "$scratch/tests.tar.zst" > "$scratch/log"
+grep -Fq -- "--archive-file $scratch/tests.tar.zst --workspace-remap $scratch/repo" "$scratch/listed"
+grep -q -- '--cargo-metadata .*/target/nextest/cargo-metadata.json' "$scratch/ran"
+grep -q -- '--binaries-metadata .*/target/nextest/binaries-metadata.json' "$scratch/ran"
+grep -Fq -- "--workspace-remap $scratch/repo" "$scratch/ran"
+grep -q -- '--no-tests fail' "$scratch/ran"
+if grep -Eq -- '--locked|--partition|--archive-file' "$scratch/ran"; then
+  echo 'Archive replay rebuilt, partitioned, or unpacked the archive twice' >&2; exit 1
+fi
+rm "$scratch/ran"
+if MATCH_STATUS=mismatch GITHUB_WORKSPACE="$scratch/repo" bash "$root/scripts/ci/run_workspace_tests.sh" all "$scratch/tests.tar.zst" > "$scratch/log" 2>&1; then
+  echo 'An empty archive selection was accepted' >&2; exit 1
 fi
 [[ ! -e "$scratch/ran" ]]
 echo 'Workspace test selection: PR and merge-group reverse dependencies agree; main and full scope use the whole workspace; invalid scope fails.'
