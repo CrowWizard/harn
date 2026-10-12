@@ -11,13 +11,6 @@ pub(in super::super) fn detect_project_fingerprint(dir: &Path) -> ProjectFingerp
         signals.add_language_signal("typescript");
         signals.build_tools.insert("next".to_string());
     }
-    if signals.node_project
-        && !signals.package_managers.contains("npm")
-        && !signals.package_managers.contains("pnpm")
-        && !signals.package_managers.contains("yarn")
-    {
-        signals.package_managers.insert("npm".to_string());
-    }
     if signals.python_project
         && !signals.package_managers.contains("poetry")
         && !signals.package_managers.contains("uv")
@@ -66,6 +59,8 @@ pub(in super::super) fn detect_project_fingerprint(dir: &Path) -> ProjectFingerp
             signals.build_tools.insert("yarn".to_string());
         } else if signals.package_managers.contains("npm") {
             signals.build_tools.insert("npm".to_string());
+        } else if signals.package_managers.contains("bun") {
+            signals.build_tools.insert("bun".to_string());
         }
     }
     if signals.python_project && signals.build_tools.is_empty() {
@@ -120,6 +115,18 @@ pub(super) fn walk_project_fingerprint(
     };
     let mut entries = read_dir.flatten().collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.file_name());
+
+    // One evidence read per package directory, including lock-only projects.
+    // Presence routes the projection; the shared owner validates and selects.
+    if entries.iter().any(|entry| {
+        let name = entry.file_name();
+        name == "package.json"
+            || crate::package_scripts::LOCKFILE_NAMES.contains(&name.to_string_lossy().as_ref())
+    }) {
+        if let Ok(Some(manager)) = crate::package_scripts::manager_facts(base, dir) {
+            signals.package_managers.insert(manager);
+        }
+    }
 
     for entry in entries {
         let Ok(file_type) = entry.file_type() else {
@@ -184,6 +191,12 @@ pub(super) fn inspect_fingerprint_file(
     name: &str,
     signals: &mut FingerprintSignals,
 ) {
+    if crate::package_scripts::LOCKFILES
+        .iter()
+        .any(|(file, _)| *file == name)
+    {
+        signals.lockfile_paths.insert(rel.to_string());
+    }
     if let Some((_lockfile, manager)) = PROJECT_LOCKFILES
         .iter()
         .find(|(lockfile, _manager)| *lockfile == name)
@@ -380,19 +393,6 @@ pub(super) fn inspect_package_json(path: &Path, signals: &mut FingerprintSignals
     if deps.contains("mocha") {
         signals.test_runners.insert("mocha".to_string());
         signals.has_tests = true;
-    }
-
-    if let Some(package_manager) = parsed
-        .get("packageManager")
-        .and_then(|value| value.as_str())
-    {
-        if package_manager.starts_with("pnpm@") {
-            signals.package_managers.insert("pnpm".to_string());
-        } else if package_manager.starts_with("yarn@") {
-            signals.package_managers.insert("yarn".to_string());
-        } else if package_manager.starts_with("npm@") {
-            signals.package_managers.insert("npm".to_string());
-        }
     }
 
     if let Some(scripts) = parsed.get("scripts").and_then(|value| value.as_object()) {
