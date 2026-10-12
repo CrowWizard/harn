@@ -89,6 +89,14 @@ declaration. Callers must name its outer workflow step exactly
 checked against the shared owner. Dispatch consumes the action's closed context
 only after publication succeeds.
 
+`consumer-observer-dispatch.mjs` binds that context to its actual invoking run,
+attempt and workflow revision. The shared dispatch owner authenticates the
+immutable declaration and reads the latest live parent immediately before the
+request. Parent reads use the job's public read token; the dispatch uses the
+existing consumer-scoped App credential. A successful dispatch response exports
+no private child identity. If the parent ends after the final read, downstream
+admission still refuses expensive work.
+
 `reconcileOwnedChildren` discovers candidate children by the shared title, then
 authenticates each private receipt and freshly reads that child's latest attempt.
 The receipt must bind the same parent, declaration, source, workflow, App actor,
@@ -111,3 +119,44 @@ child reading narrows the read/cancel race but cannot eliminate it. Reconciliati
 prints only declaration and outcome counts, never private repository identities,
 child run IDs, receipt contents, or arbitrary network errors. The automatic parent
 dispatch callers remain unchanged until the operational lifecycle is qualified.
+
+## Product decision receipt
+
+The `consumer-observer-terminal` action records the private consumer's reached
+canonical decision. It reads the authenticated ownership artifact from its own
+run, the parent's declaration and exact historical attempt, and a fresh child
+reading. The producer's current run, attempt and revision must match that reading.
+An ordinary rehearsal emits `recorded=false` without requiring a product file.
+
+The canonical decision file contains exactly `source_revision`, `verdict`,
+`owed`, `proven`, `pending`, `failed` and `failed_suites`. Recording requires the
+observer's source, a positive owed count, no pending checks, and
+`owed=proven+failed`. A pass has no failures and an empty `failed_suites`; a
+failure has positive failures and exactly that many distinct suite identifiers.
+Missing, skipped, empty or partial decisions refuse recording.
+Harn validates this shape; the consumer owns which product checks are owed and
+must emit the file only after its actual canonical judgment reaches every owed
+check. A reached failure requires a source-qualified suite receipt and actual
+producer failure. Setup, logging, skipped or missing evidence cannot manufacture
+a product failure.
+
+The action returns `recorded=true`, a private receipt path and the canonical
+`artifact` name. Store the file in the consumer repository under that name,
+`consumer-observer-product-<nonce>`. Its archive contains the single standard
+filename `consumer-observer-<nonce>.json`. No child identity is published upstream.
+Recording while the producer runs does not authorize release: a reader must
+apply `qualifyTerminalReceipt` with the same authenticated ownership and parent
+declaration. A pass requires fresh completed child SUCCESS; a reached product
+failure requires fresh completed child FAILURE. Execution failure alone leaves
+the product decision unreported.
+
+`consumer-observer-observe.mjs` reads that decision through the same custody
+owner used by cleanup. Its outputs are `verdict` (`pass`, `fail`, `pending` or `refused`)
+and a closed `reading` with `discovered`, `owned`, `pending`, `refused` and
+`product`. Missing or ambiguous children and missing product receipts have
+`product=null`; this is an unreported decision, not measured zero checks.
+A pass requires exactly one discovered and authenticated child, a complete
+private receipt and fresh completed SUCCESS. The returned product counts come
+from the reached decision, never a private workflow job table. Final complete
+discovery and fresh child reads narrow the race; GitHub provides no atomic
+snapshot against a dispatch or rerun arriving after the final read.
