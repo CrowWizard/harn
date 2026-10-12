@@ -62,7 +62,10 @@ cursor-style source scanners.
 
 Sets are created with the `set()` builtin and are immutable -- mutation
 operations return a new set. Sets deduplicate values using structural
-equality.
+equality, retaining the first occurrence. Membership uses the same equality
+as `==`, including mixed numeric coercion; closures and NaN are never equal.
+Two sets are equal when their members can be paired one-to-one with equal
+values, regardless of insertion order.
 
 | Function | Signature | Returns |
 |---|---|---|
@@ -104,6 +107,7 @@ Sets are iterable with `for ... in` and support `len()`.
 | `bytes_eq(a, b)` | Constant-time byte equality check |
 | `sha256(str)` | Returns the hex-encoded SHA-256 hash of `str` |
 | `md5(str)` | Returns the hex-encoded MD5 hash of `str` |
+| `hash_value(value)` | Returns an equality-compatible integer hash of `value` |
 | `hmac_sha256(key, message)` | Returns HMAC-SHA256 as lowercase hex |
 | `hmac_sha256_base64(key, message)` | Returns HMAC-SHA256 as standard base64 |
 | `constant_time_eq(a, b)` | Constant-time string equality for signatures |
@@ -124,6 +128,11 @@ Sets are iterable with `for ... in` and support `len()`.
 | `multipart_field_bytes(field)` | Returns a parsed multipart field's raw bytes |
 | `multipart_field_text(field)` | Decodes a parsed multipart field's bytes as UTF-8, throwing on invalid text |
 | `multipart_form_data(fields, opts?)` | Deterministically builds `{content_type, boundary, body}` multipart fixtures for tests; field content may be bytes or string |
+
+`hash_value(a) == hash_value(b)` whenever `a == b`. The converse does not hold:
+unequal values can share a hash, including mutable atomics and large integers
+that convert to the same float. Results need not remain stable across processes
+or Harn versions. Durable-step replay fingerprints use a separate encoding.
 
 ```harn
 const encoded = base64_encode("hello world")  // "aGVsbG8gd29ybGQ="

@@ -27,8 +27,21 @@ fn main() {
             })
         })
         .collect();
+    let compilation: Vec<_> = package_compilation_cases()
+        .map(|case| {
+            let package = case.package();
+            let diagnostics = case.compile().err().unwrap_or_default();
+            serde_json::json!({
+                "id": case.id,
+                "package": package,
+                "entry": case.entry,
+                "expected_ok": case.expected_ok,
+                "expected_diagnostics": diagnostics,
+            })
+        })
+        .collect();
     println!(
         "{}",
-        serde_json::json!({"pure": pure, "failures": failures})
+        serde_json::json!({"pure": pure, "failures": failures, "compilation": compilation})
     );
 }

@@ -8,6 +8,59 @@ pub struct PureCase {
 
 pub const PURE_CASES: &[PureCase] = &[
     PureCase {
+        id: "truthiness-empty-bytes",
+        source: r"
+            fn truth(input: bytes) {
+              if input { return [!input, input ? true : false] }
+              return [!input, false]
+            }
+        ",
+        entry: "truth",
+        input_json: r#"{"$bytes":[]}"#,
+        expected_json: "[true,false]",
+    },
+    PureCase {
+        id: "truthiness-nonempty-bytes-with-zero-byte",
+        source: r"
+            fn truth(input: bytes) {
+              if input { return [!input, input ? true : false] }
+              return [!input, false]
+            }
+        ",
+        entry: "truth",
+        input_json: r#"{"$bytes":[0]}"#,
+        expected_json: "[false,true]",
+    },
+    PureCase {
+        id: "truthiness-nan-folding-and-runtime-branches",
+        source: r"
+            fn truth(input: float) {
+              let nan = input / input
+              let branch = false
+              if nan { branch = true }
+              return [!(0.0 / 0.0), !nan, (0.0 / 0.0) ? true : false,
+                nan ? true : false, (0.0 / 0.0) && true, nan && true,
+                (0.0 / 0.0) || false, nan || false, branch, !input]
+            }
+        ",
+        entry: "truth",
+        input_json: "0.0",
+        expected_json: "[false,false,true,true,true,true,true,true,true,true]",
+    },
+    PureCase {
+        id: "truthiness-duration-and-empty-values",
+        source: r"
+            fn truth(input: {zero: int, one: int, text: string, items: list<int>, record: dict<string, int>}) {
+              return [!0ms, !1ms, !input.zero, !input.one, !input.text, !input.items, !input.record,
+                !nil, !false, !true, ![], !({}), !0.0, !1.0]
+            }
+        ",
+        entry: "truth",
+        input_json: r#"{"zero":0,"one":1,"text":"","items":[],"record":{}}"#,
+        expected_json:
+            "[true,false,true,false,true,true,true,true,true,false,true,true,true,false]",
+    },
+    PureCase {
         id: "runtime-string-repetition",
         source: r#"
             fn repeat(input: {text: string, count: int}) {
@@ -589,5 +642,78 @@ pub const INVALID_CASES: &[InvalidCase] = &[
         ",
         entry: "reduce",
         expected_code: "compile_frontend",
+    },
+];
+
+#[derive(Clone, Copy)]
+pub struct PackageCompilationCase {
+    pub id: &'static str,
+    pub source: &'static str,
+    pub entry: &'static str,
+    pub expected_ok: bool,
+}
+
+impl PackageCompilationCase {
+    pub fn package(&self) -> harn_kernel::PortableSourcePackage {
+        harn_kernel::PortableSourcePackage {
+            root_source: self.source.to_string(),
+            root_imports: Vec::new(),
+            modules: Vec::new(),
+        }
+    }
+
+    pub fn compile(&self) -> Result<harn_kernel::ProgramArtifact, Vec<harn_kernel::Diagnostic>> {
+        let result = harn_kernel::compile_source_package(
+            self.package(),
+            self.entry,
+            harn_kernel::EntryKind::Function,
+        );
+        assert_eq!(
+            result.is_ok(),
+            self.expected_ok,
+            "{} compilation decision drifted",
+            self.id
+        );
+        if let Err(diagnostics) = &result {
+            assert!(
+                !diagnostics.is_empty(),
+                "{} has no failure diagnostic",
+                self.id
+            );
+        }
+        result
+    }
+}
+
+pub fn package_compilation_cases() -> impl Iterator<Item = PackageCompilationCase> {
+    INVALID_CASES
+        .iter()
+        .map(|case| PackageCompilationCase {
+            id: case.id,
+            source: case.source,
+            entry: case.entry,
+            expected_ok: false,
+        })
+        .chain(PACKAGE_COMPILATION_CASES.iter().copied())
+}
+
+pub const PACKAGE_COMPILATION_CASES: &[PackageCompilationCase] = &[
+    PackageCompilationCase {
+        id: "removed-provider-wrapper-alias",
+        source: "fn reduce(input: string) { return with_rate_limit(input) }",
+        entry: "reduce",
+        expected_ok: false,
+    },
+    PackageCompilationCase {
+        id: "retained-provider-call-alias",
+        source: "fn reduce(input: string) { return llm_call(input) }",
+        entry: "reduce",
+        expected_ok: true,
+    },
+    PackageCompilationCase {
+        id: "retained-provider-call-method",
+        source: "fn reduce(harness: Harness, input: string) { return harness.llm.call(input) }",
+        entry: "reduce",
+        expected_ok: true,
     },
 ];
