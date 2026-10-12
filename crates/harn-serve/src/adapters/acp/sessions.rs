@@ -15,6 +15,7 @@ pub(super) struct ConcurrentSessionControl {
     /// Empty between turns, as the per-turn client sink always was: an idle
     /// control is answered by its JSON-RPC reply and its durable record.
     prompt_transport: Arc<std::sync::Mutex<harn_vm::agent_events::AgentEventTransport>>,
+    pub(super) prompt_owner: Arc<std::sync::Mutex<Option<prompt_owner::PromptExecutionOwner>>>,
 }
 
 /// What one session's spend ceiling is measured against across its turns.
@@ -135,11 +136,18 @@ impl ConcurrentSessionControl {
             llm_spend: Arc::default(),
             prompt_active: Arc::new(AtomicBool::new(false)),
             prompt_transport: Arc::default(),
+            prompt_owner: Arc::default(),
         }
     }
 
     pub(super) fn set_prompt_active(&self, active: bool) {
         self.prompt_active.store(active, Ordering::SeqCst);
+        if !active {
+            *self
+                .prompt_owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
+        }
     }
 
     pub(super) fn prompt_is_active(&self) -> bool {
@@ -170,10 +178,11 @@ impl ConcurrentSessionControl {
 
 #[derive(Clone)]
 pub(super) struct ConcurrentSessionControls {
-    sessions: Arc<std::sync::Mutex<HashMap<String, ConcurrentSessionControl>>>,
+    pub(super) sessions: Arc<std::sync::Mutex<HashMap<String, ConcurrentSessionControl>>>,
     inject_owners: Arc<std::sync::Mutex<HashMap<String, BTreeMap<String, InjectControlRecord>>>>,
     authenticated: Arc<AtomicBool>,
     auth_required_data: Arc<serde_json::Value>,
+    pub(super) task_admission: Option<Arc<dyn SessionTaskAdmission>>,
 }
 
 impl ConcurrentSessionControls {
@@ -183,7 +192,16 @@ impl ConcurrentSessionControls {
             inject_owners: Arc::default(),
             authenticated: Arc::new(AtomicBool::new(authenticated)),
             auth_required_data: Arc::new(auth_required_data),
+            task_admission: None,
         }
+    }
+
+    pub(super) fn with_task_admission(
+        mut self,
+        admission: Option<Arc<dyn SessionTaskAdmission>>,
+    ) -> Self {
+        self.task_admission = admission;
+        self
     }
 
     pub(super) fn mark_authenticated(&self) {
@@ -195,6 +213,27 @@ impl ConcurrentSessionControls {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(session_id.to_string(), control);
+    }
+
+    pub(super) fn active_control(
+        &self,
+        session_id: Option<&str>,
+    ) -> Option<ConcurrentSessionControl> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(session_id) = session_id {
+            return sessions
+                .get(session_id)
+                .filter(|control| control.prompt_is_active())
+                .cloned();
+        }
+        let mut active = sessions
+            .values()
+            .filter(|control| control.prompt_is_active());
+        let control = active.next()?.clone();
+        active.next().is_none().then_some(control)
     }
 
     /// Publish a control outcome to the session's durable subscribers and,
@@ -412,39 +451,27 @@ impl ConcurrentSessionControls {
             .and_then(|value| value.as_str())
             .unwrap_or(mode)
             .to_string();
-        let recorded_text = content.clone();
-        let message_id = control
-            .inject_state
-            .push_pending_user_message(content, transcript_content, mode)
-            .await;
-        self.record_inject_owner(&session_id, message_id.clone(), actor.clone());
-        // This is the mid-turn steer: the prompt is in flight, so the
-        // frame never reaches the dispatch handler. Recording only there
-        // would have left the store blind to exactly the case the typed
-        // control event exists for.
-        super::core::record_and_emit_control(
-            self,
-            &session_id,
-            harn_session_store::ControlEvent::injection(
-                "session/inject",
-                control_id(),
-                "accepted",
-                requested_mode,
-                mode,
-                message_id.clone(),
-                recorded_text,
+        let response = match self
+            .enqueue_injection(
+                &session_id,
+                &control.inject_state,
+                params,
+                InjectionCommand {
+                    content,
+                    transcript_content,
+                    mode: mode.to_owned(),
+                    requested_mode,
+                    goal,
+                    actor,
+                },
             )
-            .with_goal(goal)
-            .with_actor(actor.clone()),
-        );
-        let response = harn_vm::jsonrpc::response(
-            id.clone(),
-            serde_json::json!({
-                "messageId": message_id,
-                "status": "accepted",
-                "_meta": { "harn": { "actor": actor } }
-            }),
-        );
+            .await
+        {
+            Ok(result) => harn_vm::jsonrpc::response(id.clone(), result),
+            Err(error) => {
+                harn_vm::jsonrpc::error_response(id.clone(), error.rpc_code(), error.message())
+            }
+        };
         if let Ok(line) = serde_json::to_string(&response) {
             output.write_line(&line);
         }
@@ -498,7 +525,11 @@ impl ConcurrentSessionControls {
         true
     }
 
-    fn reject_unauthenticated(&self, id: &serde_json::Value, output: &AcpOutput) -> bool {
+    pub(super) fn reject_unauthenticated(
+        &self,
+        id: &serde_json::Value,
+        output: &AcpOutput,
+    ) -> bool {
         if self.authenticated.load(Ordering::SeqCst) {
             return false;
         }
@@ -655,7 +686,7 @@ pub(super) enum PreparedSessionRequest {
     Unprepared,
     Prompt(Arc<PromptCancellation>),
     Cancel {
-        newly_cancelled: bool,
+        result: Result<bool, TaskAdmissionError>,
     },
 }
 
@@ -679,8 +710,7 @@ impl SessionCancellation {
             let Some(prompt) = prompt.upgrade() else {
                 return false;
             };
-            prompt.cancelled.store(true, Ordering::SeqCst);
-            prompt.notify.notify_waiters();
+            prompt.cancel();
             true
         });
         !already_cancelled
@@ -914,8 +944,24 @@ pub(super) fn preempt_session_interruption(
                 // answered. Falling through on a miss hands the frame to the
                 // normal dispatch, which records the miss as a rejected
                 // control outcome instead of dropping it.
-                let Some(newly_cancelled) = mark_cancelled_session(cancellations, params) else {
+                let Some(result) =
+                    prompt_owner::cancel_session_prompt(cancellations, controls, params)
+                else {
                     return false;
+                };
+                let newly_cancelled = match result {
+                    Ok(cancelled) => cancelled,
+                    Err(error) => {
+                        if let Some(session_id) = session_id_param(params) {
+                            prompt_owner::record_cancel_refusal(
+                                controls,
+                                &session_id,
+                                params,
+                                error,
+                            );
+                        }
+                        return true;
+                    }
                 };
                 // A stop accepted here never reaches the dispatch
                 // handler, so this is the only place the mid-turn stop
@@ -1012,11 +1058,12 @@ pub(super) fn prepare_session_request(
     if msg.get("method").and_then(|value| value.as_str()) == Some("session/cancel")
         && msg.get("id").is_some()
     {
-        return mark_cancelled_session(
+        return prompt_owner::cancel_session_prompt(
             cancellations,
+            controls,
             msg.get("params").unwrap_or(&serde_json::Value::Null),
         )
-        .map(|newly_cancelled| PreparedSessionRequest::Cancel { newly_cancelled })
+        .map(|result| PreparedSessionRequest::Cancel { result })
         .unwrap_or_default();
     }
     if msg.get("method").and_then(|value| value.as_str()) != Some("session/prompt") {

@@ -85,6 +85,8 @@ pub mod harness_system;
 pub mod harness_tenant;
 pub mod host_attachments;
 pub mod host_stdio;
+mod source_compile;
+pub mod task_retry;
 pub(crate) mod tool_call_mutations;
 
 /// Placement policy for child-interpreter subtasks.
@@ -439,6 +441,7 @@ pub use sessions::{
     CreateSession, ExpireSession, Session, SessionAttributes, SessionError, SessionStore,
     TouchSession, SESSIONS_TOPIC,
 };
+pub use source_compile::{compile_source, compile_source_at_path, compile_source_named};
 /// The single owner of ignore policy for every Harn filesystem walk.
 ///
 /// Re-exported so embedders that enumerate files on behalf of Harn scripts
@@ -448,8 +451,8 @@ pub use stdlib::fs::ignore_policy;
 #[doc(hidden)]
 pub use stdlib::fs::invalidate_cached_file_text;
 pub use stdlib::hitl::{
-    append_hitl_response, ApprovalRequest, HitlHostResponse, HITL_APPROVALS_TOPIC,
-    HITL_DUAL_CONTROL_TOPIC, HITL_ESCALATIONS_TOPIC, HITL_QUESTIONS_TOPIC,
+    append_hitl_response, append_hitl_response_on, ApprovalRequest, HitlHostResponse,
+    HITL_APPROVALS_TOPIC, HITL_DUAL_CONTROL_TOPIC, HITL_ESCALATIONS_TOPIC, HITL_QUESTIONS_TOPIC,
 };
 /// Per-turn memo for turn-stable host reads. See [`stdlib::host::turn_cache`].
 pub use stdlib::host::turn_cache as host_turn_cache;
@@ -554,33 +557,6 @@ pub use vm::*;
 #[cfg(feature = "vm-bench-internals")]
 #[doc(hidden)]
 pub mod bench_internals;
-
-/// Lex, parse, type-check, and compile source to bytecode in one call.
-/// Bails on the first type error. For callers that need diagnostics
-/// rather than early exit, use `harn_parser::check_source` directly
-/// and then call `Compiler::new().compile(&program)`.
-pub fn compile_source(source: &str) -> Result<Chunk, String> {
-    let program = harn_parser::check_source_strict(source).map_err(|e| e.to_string())?;
-    Compiler::new().compile(&program).map_err(|e| e.to_string())
-}
-
-/// Same as [`compile_source`] but compiles a specific named pipeline as
-/// the program entry point instead of the default-pipeline-or-first
-/// selection rule. Returns a runtime error when no pipeline with
-/// `pipeline_name` exists in the source.
-pub fn compile_source_named(source: &str, pipeline_name: &str) -> Result<Chunk, String> {
-    let program = harn_parser::check_source_strict(source).map_err(|e| e.to_string())?;
-    let has_pipeline = program.iter().any(|sn| {
-        let (_, inner) = harn_parser::peel_attributes(sn);
-        matches!(&inner.node, harn_parser::Node::Pipeline { name, .. } if name == pipeline_name)
-    });
-    if !has_pipeline {
-        return Err(format!("no pipeline named `{pipeline_name}` in source"));
-    }
-    Compiler::new()
-        .compile_named(&program, pipeline_name)
-        .map_err(|e| e.to_string())
-}
 
 /// Lowers resolved Harn declarations to JSON Schema for public host boundaries.
 ///
