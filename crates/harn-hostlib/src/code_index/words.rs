@@ -6,6 +6,7 @@
 //! Tokens are runs of `[A-Za-z_][A-Za-z0-9_]*` (single-character tokens
 //! are skipped), one entry per occurrence.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use super::file_table::FileId;
 
 /// Single occurrence of an identifier-shaped token: which file it landed
 /// in and on which 1-based line number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct WordHit {
     /// File the token was tokenized from.
     pub file: FileId,
@@ -30,7 +31,7 @@ impl super::postings::FilePosting for WordHit {
 /// Inverted word index keyed on identifier-shaped tokens.
 #[derive(Debug, Default, Clone)]
 pub struct WordIndex {
-    postings: super::postings::FilePostings<Arc<str>, WordHit>,
+    pub(super) postings: super::postings::FilePostings<Arc<str>, WordHit>,
 }
 
 impl WordIndex {
@@ -74,8 +75,10 @@ impl WordIndex {
         self.postings.remove_file(id);
     }
 
-    /// O(1) lookup for every hit recorded under `word`.
-    pub fn get(&self, word: &str) -> &[WordHit] {
+    /// Every hit recorded under `word`. Borrowed unless an edit since the
+    /// last compaction touched the word, in which case the live hits are
+    /// assembled from the shared base and the edits.
+    pub fn get(&self, word: &str) -> Cow<'_, [WordHit]> {
         self.postings.get(word)
     }
 
@@ -87,16 +90,25 @@ impl WordIndex {
     /// Capture the inverted index as snapshot-friendly postings. Sorted
     /// by word so the on-disk JSON is reproducible.
     pub fn snapshot_postings(&self) -> Vec<super::snapshot::WordPosting> {
-        let mut out: Vec<super::snapshot::WordPosting> = self
-            .postings
-            .terms()
+        self.posting_rows()
+            .into_iter()
             .map(|(word, hits)| super::snapshot::WordPosting {
                 word: word.to_string(),
                 hits: hits.iter().map(|h| (h.file, h.line)).collect(),
             })
+            .collect()
+    }
+
+    /// Every posting, sorted by word, borrowed where no edit touched it.
+    pub(super) fn posting_rows(&self) -> Vec<(&str, Cow<'_, [WordHit]>)> {
+        let mut rows: Vec<(&str, Cow<'_, [WordHit]>)> = self
+            .postings
+            .rows()
+            .into_iter()
+            .map(|(word, hits)| (&**word, hits))
             .collect();
-        out.sort_by(|a, b| a.word.cmp(&b.word));
-        out
+        rows.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        rows
     }
 
     /// Rebuild a [`WordIndex`] from a snapshot's postings vector.
@@ -120,9 +132,14 @@ impl WordIndex {
         self.postings.estimated_bytes()
             + self
                 .postings
-                .terms()
-                .map(|(key, _)| key.len() + 16)
+                .keys()
+                .map(|key| key.len() + 16)
                 .sum::<usize>()
+    }
+
+    /// Fold accumulated edits into a fresh shared base once they are worth it.
+    pub(super) fn compact_if_heavy(&mut self) {
+        self.postings.compact_if_heavy();
     }
 }
 
@@ -192,7 +209,7 @@ mod tests {
             },
         ]);
         assert_eq!(
-            idx.get("alpha"),
+            &*idx.get("alpha"),
             &[
                 WordHit { file: 2, line: 3 },
                 WordHit { file: 9, line: 1 },
@@ -203,7 +220,7 @@ mod tests {
         idx.remove_file(2);
         idx.index_file(4, "beta beta\nalpha alpha");
         assert_eq!(
-            idx.get("alpha"),
+            &*idx.get("alpha"),
             &[
                 WordHit { file: 9, line: 1 },
                 WordHit { file: 4, line: 2 },
@@ -214,7 +231,7 @@ mod tests {
         assert_eq!(restored.get("alpha"), idx.get("alpha"));
         restored.remove_file(4);
         assert!(restored.get("beta").is_empty());
-        assert_eq!(restored.get("alpha"), &[WordHit { file: 9, line: 1 }]);
+        assert_eq!(&*restored.get("alpha"), &[WordHit { file: 9, line: 1 }]);
     }
 
     #[test]
@@ -235,7 +252,7 @@ mod tests {
         assert_eq!(alpha_hits[0], WordHit { file: 7, line: 1 });
         assert_eq!(alpha_hits[1], WordHit { file: 7, line: 3 });
         let gamma_hits = idx.get("gamma");
-        assert_eq!(gamma_hits, &[WordHit { file: 7, line: 2 }]);
+        assert_eq!(&*gamma_hits, &[WordHit { file: 7, line: 2 }]);
     }
 
     #[test]
@@ -246,7 +263,7 @@ mod tests {
         assert!(idx.get("foo").is_empty());
         idx.index_file(1, "qux");
         assert!(idx.get("foo").is_empty());
-        assert_eq!(idx.get("qux"), &[WordHit { file: 1, line: 1 }]);
+        assert_eq!(&*idx.get("qux"), &[WordHit { file: 1, line: 1 }]);
     }
 
     #[test]
