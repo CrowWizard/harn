@@ -106,7 +106,7 @@ mod symbol_graph;
 mod timing;
 mod trigram;
 mod versions;
-mod walker;
+pub(crate) mod walker;
 mod warm;
 mod words;
 
