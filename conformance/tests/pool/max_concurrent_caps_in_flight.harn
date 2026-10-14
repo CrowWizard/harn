@@ -23,7 +23,7 @@ pipeline default(harness: Harness) {
   }
   let handles = []
   for _i in 0..6 {
-    handles = handles.appending(pool.submit(body))
+    handles.push(pool.submit(body))
   }
   for _i in 0..6 {
     harness.runtime.send(gate, "go")

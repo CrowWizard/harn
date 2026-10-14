@@ -2,6 +2,7 @@ pub mod acp_ambient_globals;
 pub mod analysis;
 mod ast;
 pub mod ast_json;
+pub mod builtin_methods;
 pub mod builtin_signatures;
 pub mod const_eval;
 pub mod diagnostic;
@@ -9,6 +10,7 @@ pub mod diagnostic_codes;
 pub mod interpolation;
 pub mod lexical;
 mod namespace_demand;
+pub mod namespace_signatures;
 pub mod operator_migration;
 pub mod operators;
 pub mod param_annotations;
@@ -24,6 +26,7 @@ pub use diagnostic_codes::{
     RepairId, RepairSafety, RepairTemplate, REPAIR_REGISTRY,
 };
 pub use namespace_demand::{namespace_import_demands, NamespaceDemand};
+pub use namespace_signatures::NamespaceMemberSignature;
 pub use parser::*;
 pub use runtime_stack::{PARSE_STACK_SIZE, RUNTIME_STACK_SIZE};
 pub use stdlib_metadata::{

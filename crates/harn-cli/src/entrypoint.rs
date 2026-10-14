@@ -1038,6 +1038,7 @@ async fn dispatch(subcommand: Command) {
         | Command::DumpOperatorPrecedence(_)
         | Command::DumpPortableBenchmarkSchema(_)
         | Command::DumpPromptGrammar(_)
+        | Command::DumpBuiltinMethods(_)
         | Command::DumpTriggerQuickref(_)
         | Command::DumpCliSurface(_)
         | Command::DumpConnectorMatrix(_)

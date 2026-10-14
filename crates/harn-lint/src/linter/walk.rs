@@ -1172,9 +1172,9 @@ impl<'a> Linter<'a> {
     ///
     /// Both the ambient global and the typed `harness.*` method that replaced
     /// it route here, so migrating a call site cannot silence a rule. Anything
-    /// added here is spelling-independent for free; anything left matching
-    /// `Node::FunctionCall` on a name is not.
+    /// added here is spelling-independent; a `Node::FunctionCall` name is not.
     fn check_builtin_call_rules(&mut self, node: &SNode) {
+        self.record_mutating_call_assignment(node);
         if let Some(registry) = self
             .call_names_builtin(node, "mcp_tools")
             .and_then(|args| args.first())
