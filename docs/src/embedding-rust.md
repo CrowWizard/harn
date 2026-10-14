@@ -118,8 +118,9 @@ take effect in builds that do **not** pull in the full CLI.
 
 Use `harn_serve::try_load_provider_connectors` with the project directory or
 source anchor before initializing package-backed connector clients. It uses
-the CLI's package resolver, including dependency materialization, root
-overrides, provider deduplication, and explicit dependency failures.
+the shared `harn-package` resolver, also used by the CLI, including dependency
+materialization, root overrides, provider deduplication, and explicit dependency
+failures.
 
 ```rust
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,6 +144,25 @@ missing or malformed dependency returns an error. Use
 root declarations without resolving package contributions. Keep the returned
 `ResolvedProviderConnectors` alive through initialization so concurrent
 package publication cannot collect its generation.
+
+For child launches, add these direct dependencies using the same tag as
+`harn-serve`. Enable its `hostlib` feature for the guardian entrypoint shown
+above; the direct dependencies keep their default features disabled so the
+handoff does not add grammars or native credential-store adapters.
+
+```toml
+harn-serve = { git = "https://github.com/burin-labs/harn", tag = "v0.10.166", features = ["hostlib"] }
+harn-vm = { git = "https://github.com/burin-labs/harn", tag = "v0.10.166", default-features = false }
+harn-hostlib = { git = "https://github.com/burin-labs/harn", tag = "v0.10.166", default-features = false }
+```
+
+The process handoff is available in lean hostlib without additional features.
+Pass the discovered outbound IDs to
+`harn_vm::secrets::ParentSecretHandoff::capture` with the selected parent
+provider, then use `harn_hostlib::process::spawn_harn_with_parent_secrets`.
+The child independently resolves the same manifest declarations. The handoff
+keeps values out of its launch environment and closes ambient provider
+fallback, including when a required grant is missing.
 
 ## Start an embedded agent
 
