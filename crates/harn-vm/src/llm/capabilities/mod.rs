@@ -25,10 +25,8 @@
 //! public [`lookup`] entry points). Every previously-public item is re-exported
 //! here so `capabilities::X` paths resolve unchanged.
 
-/// Generated shipped default rules. Compiled into the binary at build time.
-pub(super) const BUILTIN_TOML: &str = include_str!("../capabilities.toml");
 /// Generated provider/model snapshot built from catalog_sources/**/*.toml.
-pub(super) const BUILTIN_PROVIDERS_TOML: &str = include_str!("../providers.toml");
+pub(super) const BUILTIN_PROVIDERS_TOML: &str = harn_provider_catalog::EMBEDDED_PROVIDERS_TOML;
 
 mod admission;
 mod audit;
@@ -72,7 +70,9 @@ mod tool_format;
 pub(crate) use admission::admit_portable_option_for_thinking;
 pub use effort::ReasoningEffort;
 pub(crate) use lookup::should_use_responses_transport;
+pub(crate) use overrides::current_user_overrides;
 pub(crate) use overrides::swap_user_overrides;
+pub(crate) use runtime_probe::cached_measurement;
 
 pub use admission::{
     admit_portable_option, admit_portable_option_with_effort, admit_prompt_cache_ttl,

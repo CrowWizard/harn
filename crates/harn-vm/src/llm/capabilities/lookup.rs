@@ -1,23 +1,16 @@
 //! Lookup and user-override facade: owns public lookup helpers.
 
 use std::collections::BTreeSet;
-use std::sync::OnceLock;
 
 use serde::Deserialize;
 
 use super::model::{Capabilities, CapabilitiesFile, ProviderLimits};
 use super::overrides::{current_user_overrides, set_user_overrides as set_context_overrides};
 use super::rule::resolve_with_features;
-use super::BUILTIN_TOML;
 use harn_provider_catalog::capabilities::{CapabilityRoute, CapabilityRules};
 
-static BUILTIN: OnceLock<CapabilitiesFile> = OnceLock::new();
-
 pub(super) fn builtin() -> &'static CapabilitiesFile {
-    BUILTIN.get_or_init(|| {
-        toml::from_str::<CapabilitiesFile>(BUILTIN_TOML)
-            .expect("capabilities.toml must parse at build time")
-    })
+    harn_provider_catalog::capabilities::builtin_file()
 }
 
 /// The shipped (built-in) capability matrix. Public so the footgun gate in
@@ -246,14 +239,13 @@ pub fn lookup_with_source_config(
     base: &CapabilitiesFile,
     config: &crate::llm_config::ProvidersConfig,
 ) -> Capabilities {
-    let model = crate::llm_config::capability_model_id_for_config(provider, model, config);
-    let responses = config.providers.get(provider).is_some_and(|provider| {
-        provider
-            .features
-            .iter()
-            .any(|feature| feature == "responses_api")
-    });
-    resolve_with_features(provider, &model, base, None, responses).capabilities()
+    let resolved =
+        harn_provider_catalog::CatalogView::new(config, base, None).capabilities(provider, model);
+    if provider != "mock" && !resolved.matched() && !resolved.has_defaults() {
+        let model = crate::llm_config::capability_model_id_for_config(provider, model, config);
+        super::diagnostics::warn_unmatched_route_once(provider, &model);
+    }
+    resolved.capabilities()
 }
 
 #[cfg(test)]

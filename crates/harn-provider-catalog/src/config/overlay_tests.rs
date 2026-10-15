@@ -1,7 +1,7 @@
 //! Overlay and `[patch.models]` merge semantics: which layer wins, what
 //! survives a whole-row replacement, and how a dangling patch behaves.
 
-use super::super::*;
+use super::*;
 use serde::Deserialize;
 
 #[test]
@@ -324,7 +324,7 @@ fn model_rows_roundtrip_through_toml_value_for_patching() {
     // embedded catalog row must survive the round trip unchanged (a
     // missing `Serialize` derive or asymmetric serde attribute on a
     // nested def would corrupt rows the first time they are patched).
-    let config = default_config();
+    let config = packaged_config();
     assert!(!config.models.is_empty());
     for (id, row) in &config.models {
         let value = toml::Value::try_from(row)

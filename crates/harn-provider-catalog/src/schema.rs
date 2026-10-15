@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
+use crate::config as llm_config;
 
 pub fn schema_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&schema_value()).map(|mut text| {
@@ -177,7 +178,7 @@ pub fn schema_value() -> Value {
                         "additionalProperties": {"$ref": "#/$defs/endpoint_region"}
                     },
                     "chat_endpoint": {"type": "string", "minLength": 1},
-                    "chat_api_adapter": {"enum": harn_provider_catalog::ChatApiAdapter::ALL},
+                    "chat_api_adapter": {"enum": crate::ChatApiAdapter::ALL},
                     "completion_endpoint": {"type": "string"},
                     "embeddings_endpoint": {"type": "string"}
                 },
