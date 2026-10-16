@@ -1,6 +1,8 @@
 //! Inbox delivery, command updates, feedback, and reminder mutation.
 
 use super::*;
+#[cfg(test)]
+use crate::NativeBuiltinCtxExt;
 
 /// Deterministic "should the loop auto-continue this truncated turn?" gate.
 ///
@@ -453,7 +455,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn command_wait_without_a_vm_harness_fails_closed() {
-        let ctx = crate::vm::AsyncBuiltinCtx::for_test(crate::Vm::new());
+        let ctx = crate::vm::AsyncBuiltinCtx::for_test(crate::new_vm());
         let error = host_agent_session_await_inbox(
             ctx,
             vec![
