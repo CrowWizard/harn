@@ -117,15 +117,15 @@ impl Vm {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             VmError::Runtime("execution timeout exceeds the platform clock range".to_string())
         })?;
-        crate::orchestration::scope_ambient_transaction(async {
-            let pipeline_checkpoint = crate::orchestration::checkpoint_pipeline_lifecycle();
-            let deadline_guard = self.execution_deadline.install(deadline);
-            let result = crate::tracing::checkpoint_future(self.execute_top_level(entry)).await;
-            deadline_guard.complete();
-            pipeline_checkpoint.complete();
-            result
-        })
-        .await
+        let runtime = Arc::clone(&self.runtime);
+        runtime.execute_timed(self, entry, deadline).await
+    }
+
+    pub(crate) fn install_execution_deadline(
+        &self,
+        deadline: Instant,
+    ) -> super::execution_deadline::ExecutionDeadlineGuard {
+        self.execution_deadline.install(deadline)
     }
 
     /// Execute a shared compiled chunk without cloning its bytecode.
@@ -135,144 +135,6 @@ impl Vm {
     /// `O(code + constants)` copy.
     pub async fn execute_arc(&mut self, chunk: ChunkRef) -> Result<VmValue, VmError> {
         self.execute_top_level(TopLevelEntry::Chunk(chunk)).await
-    }
-
-    /// Run the pipeline-finish lifecycle: `PreFinish`, optional
-    /// `OnUnsettledDetected`, the `on_finish` callback, `PostFinish`. The
-    /// callback (if registered) may transform the return value; everything
-    /// else is advisory.
-    ///
-    /// Tracked: <https://github.com/burin-labs/harn/issues/1854>.
-    pub(super) async fn run_pipeline_finish_lifecycle(
-        &mut self,
-        value: VmValue,
-    ) -> Result<VmValue, VmError> {
-        use crate::orchestration::{
-            take_pipeline_on_finish, unsettled_state_snapshot_async, HookEvent,
-        };
-        let _tape_phase =
-            crate::testbench::tape::enter_phase(crate::testbench::tape::TapePhase::RuntimeFinalize);
-
-        let on_finish = take_pipeline_on_finish();
-        let unsettled = unsettled_state_snapshot_async().await;
-
-        let pre_payload = serde_json::json!({
-            "event": HookEvent::PreFinish.as_str(),
-            "return_value": crate::value::json::vm_value_to_json(&value),
-            "unsettled": unsettled.to_json(),
-            "has_on_finish": on_finish.is_some(),
-        });
-        self.fire_finish_lifecycle_event(HookEvent::PreFinish, &pre_payload)
-            .await?;
-
-        if !unsettled.is_empty() {
-            let payload = serde_json::json!({
-                "event": HookEvent::OnUnsettledDetected.as_str(),
-                "unsettled": unsettled.to_json(),
-            });
-            self.fire_finish_lifecycle_event(HookEvent::OnUnsettledDetected, &payload)
-                .await?;
-        }
-
-        let final_value = if let Some(closure) = on_finish {
-            let harness_value = self.root_harness_value().ok_or_else(|| {
-                VmError::Runtime(
-                    "pipeline finish callback requires Harness, but no root Harness is installed"
-                        .to_string(),
-                )
-            })?;
-            self.call_closure_pub(&closure, &[harness_value, value])
-                .await?
-        } else {
-            value
-        };
-
-        let post_payload = serde_json::json!({
-            "event": HookEvent::PostFinish.as_str(),
-            "return_value": crate::value::json::vm_value_to_json(&final_value),
-            "unsettled": unsettled.to_json(),
-        });
-        self.fire_finish_lifecycle_event(HookEvent::PostFinish, &post_payload)
-            .await?;
-
-        Ok(final_value)
-    }
-
-    /// Dispatch a pipeline-finish lifecycle event by invoking matching
-    /// hook closures directly on `self`. The shared `run_lifecycle_hooks`
-    /// path clones a fresh child VM per call and discards its stdout —
-    /// fine for the agent-loop boundaries where hooks are advisory side-
-    /// channels, but the pipeline-finish boundary is the script's last
-    /// chance to print before `vm.output()` is captured, so the closures
-    /// run on `self` to keep their output visible.
-    ///
-    /// Honors the lifecycle control contract (harn#1859):
-    ///   * `PreFinish` rejects `Block` outright — surfaces a runtime
-    ///     error pointing the user at `OnFinish.block_until_settled`.
-    ///     `PostFinish` ignores any control return (advisory only).
-    ///   * `OnUnsettledDetected` honors `Block` to abort the finish
-    ///     lifecycle until the unsettled work clears.
-    ///   * Modify returns are recorded but not consumed at this boundary
-    ///     (the dispatcher already replays subsequent hooks with the
-    ///     post-modify payload via `run_lifecycle_hooks_with_control`).
-    async fn fire_finish_lifecycle_event(
-        &mut self,
-        event: crate::orchestration::HookEvent,
-        payload: &serde_json::Value,
-    ) -> Result<(), VmError> {
-        use crate::orchestration::{HookControl, HookEvent};
-        let invocations = crate::orchestration::matching_vm_lifecycle_hooks(event, payload);
-        if invocations.is_empty() {
-            return Ok(());
-        }
-        let harness = self.root_harness_value().ok_or_else(|| {
-            VmError::Runtime(
-                "pipeline lifecycle hook requires Harness, but no root Harness is installed"
-                    .to_string(),
-            )
-        })?;
-        let mut current_payload = payload.clone();
-        for invocation in invocations {
-            let arg = crate::value::json::json_to_vm_value(&current_payload);
-            let closure = invocation.resolve(self).await?;
-            let raw = self
-                .call_closure_pub(&closure, &[harness.clone(), arg])
-                .await?;
-            let (action, effects) = crate::orchestration::collect_hook_effects_and_action(
-                event,
-                raw,
-                crate::value::VmValue::Nil,
-            )?;
-            crate::orchestration::inject_hook_effects_into_current_session(effects)?;
-            let control = crate::orchestration::parse_hook_control_for_finish(event, &action)?;
-            match control {
-                HookControl::Allow => {}
-                HookControl::Block { reason } => {
-                    if matches!(event, HookEvent::PreFinish) {
-                        return Err(VmError::Runtime(format!(
-                            "PreFinish hook returned block, which is not a valid control: {reason}. \
-                             To delay pipeline finish until unsettled work clears, use \
-                             OnFinish.block_until_settled (std/lifecycle) or return Modify/Allow \
-                             from PreFinish."
-                        )));
-                    }
-                    if matches!(event, HookEvent::PostFinish) {
-                        // Advisory only; ignore block returns from PostFinish.
-                        continue;
-                    }
-                    // OnUnsettledDetected: block aborts the finish lifecycle.
-                    return Err(VmError::Runtime(format!(
-                        "{} hook blocked pipeline finish: {reason}",
-                        event.as_str()
-                    )));
-                }
-                HookControl::Modify { payload: modified } => {
-                    current_payload = modified;
-                }
-                HookControl::Decision { .. } => {}
-            }
-        }
-        Ok(())
     }
 
     /// Convert a VmError into either a handled exception (returning Ok) or a propagated error.
@@ -302,13 +164,13 @@ impl Vm {
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
                     if let Some(ref dir) = frame.saved_source_dir {
-                        crate::stdlib::set_thread_source_dir(dir);
+                        self.runtime.set_source_dir(dir);
                     }
                     self.iterators.truncate(frame.saved_iterator_depth);
                     self.env = frame.saved_env;
                 }
             }
-            crate::step_runtime::prune_below_frame(self.frames.len());
+            self.runtime.prune_frames(self.frames.len());
 
             // Drop deadlines that belonged to unwound frames.
             while self
@@ -465,10 +327,10 @@ impl Vm {
                 self.release_sync_guards_for_frame(self.frames.len());
                 let popped_frame = self.frames.pop().unwrap();
                 if let Some(ref dir) = popped_frame.saved_source_dir {
-                    crate::stdlib::set_thread_source_dir(dir);
+                    self.runtime.set_source_dir(dir);
                 }
                 let current_depth = self.frames.len();
-                crate::step_runtime::prune_below_frame(current_depth);
+                self.runtime.prune_frames(current_depth);
                 // Drop any deadlines owned by the popped frame so the
                 // caller doesn't inherit them (an early `return` from
                 // inside `deadline(d) { ... }` would otherwise leave the
@@ -545,12 +407,12 @@ impl Vm {
                     if let Some(popped_frame) = self.frames.pop() {
                         self.release_sync_guards_for_frame(self.frames.len() + 1);
                         if let Some(ref dir) = popped_frame.saved_source_dir {
-                            crate::stdlib::set_thread_source_dir(dir);
+                            self.runtime.set_source_dir(dir);
                         }
                         let current_depth = self.frames.len();
                         self.exception_handlers
                             .retain(|h| h.frame_depth <= current_depth);
-                        crate::step_runtime::prune_below_frame(current_depth);
+                        self.runtime.prune_frames(current_depth);
                         while self.deadlines.last().is_some_and(|d| d.1 > current_depth) {
                             self.deadlines.pop();
                         }
@@ -620,7 +482,7 @@ impl Vm {
             if let Some(frame) = self.frames.pop() {
                 self.release_sync_guards_for_frame(frame_depth);
                 if let Some(ref dir) = frame.saved_source_dir {
-                    crate::stdlib::set_thread_source_dir(dir);
+                    self.runtime.set_source_dir(dir);
                 }
                 self.iterators.truncate(frame.saved_iterator_depth);
                 self.env = frame.saved_env;
@@ -628,7 +490,7 @@ impl Vm {
             }
         }
         let current_depth = self.frames.len();
-        crate::step_runtime::prune_below_frame(current_depth);
+        self.runtime.prune_frames(current_depth);
         while self.deadlines.last().is_some_and(|d| d.1 > current_depth) {
             self.deadlines.pop();
         }
@@ -640,40 +502,21 @@ impl Vm {
     /// short-circuited (`continue`) or annotated (`escalate`) before the
     /// generic try/catch machinery sees it.
     pub(crate) fn apply_step_error_boundary(&mut self, error: VmError) -> StepBoundaryOutcome {
-        use crate::step_runtime;
-        if !step_runtime::is_step_budget_exhausted(&error) {
-            return StepBoundaryOutcome::Throw(error);
-        }
-        let Some(step_depth) = step_runtime::active_step_frame_depth() else {
-            return StepBoundaryOutcome::Throw(error);
-        };
-        // The step's frame is the topmost on the call stack iff its
-        // recorded frame_depth equals `frames.len()`. If the throw is
-        // coming from a deeper frame we let it bubble up — the boundary
-        // still applies later when the step's own frame is reached.
-        if step_depth != self.frames.len() {
-            return StepBoundaryOutcome::Throw(error);
-        }
-        let boundary = step_runtime::with_active_step(|step| step.definition.boundary())
-            .unwrap_or(step_runtime::StepErrorBoundary::Fail);
-        match boundary {
-            step_runtime::StepErrorBoundary::Continue => {
+        use super::step_context::StepBoundaryDecision;
+        match self.runtime.step_error_boundary(error, self.frames.len()) {
+            StepBoundaryDecision::Continue { message } => {
                 // Mimic VmError::Return(Nil) for the step's frame: pop
                 // the frame, restore its env/iterators/stack, and feed a
                 // Nil return value back to the caller.
                 if let Some(popped) = self.frames.pop() {
                     self.release_sync_guards_for_frame(self.frames.len() + 1);
                     if let Some(ref dir) = popped.saved_source_dir {
-                        crate::stdlib::set_thread_source_dir(dir);
+                        self.runtime.set_source_dir(dir);
                     }
                     let current_depth = self.frames.len();
                     self.exception_handlers
                         .retain(|h| h.frame_depth <= current_depth);
-                    step_runtime::pop_and_record(
-                        current_depth + 1,
-                        "skipped",
-                        Some(step_runtime_error_message(&error)),
-                    );
+                    self.runtime.finish_skipped_step(current_depth + 1, message);
                     if self.frames.is_empty() {
                         return StepBoundaryOutcome::Returned(VmValue::Nil);
                     }
@@ -683,33 +526,7 @@ impl Vm {
                 }
                 StepBoundaryOutcome::Returned(VmValue::Nil)
             }
-            step_runtime::StepErrorBoundary::Escalate => {
-                let identity = step_runtime::with_active_step(|step| {
-                    (
-                        step.definition.name.clone(),
-                        step.definition.function.clone(),
-                    )
-                });
-                step_runtime::pop_and_record(
-                    step_depth,
-                    "escalated",
-                    Some(step_runtime_error_message(&error)),
-                );
-                let (step_name, function) = identity.unzip();
-                StepBoundaryOutcome::Throw(step_runtime::mark_escalated(
-                    error,
-                    step_name.as_deref(),
-                    function.as_deref(),
-                ))
-            }
-            step_runtime::StepErrorBoundary::Fail => {
-                step_runtime::pop_and_record(
-                    step_depth,
-                    "failed",
-                    Some(step_runtime_error_message(&error)),
-                );
-                StepBoundaryOutcome::Throw(error)
-            }
+            StepBoundaryDecision::Throw(error) => StepBoundaryOutcome::Throw(error),
         }
     }
 }
@@ -730,16 +547,6 @@ fn next_deadline(
     .map_or((None, None), |(deadline, kind)| {
         (Some(deadline), Some(kind))
     })
-}
-
-fn step_runtime_error_message(error: &VmError) -> String {
-    match error {
-        VmError::Thrown(VmValue::Dict(dict)) => dict
-            .get("message")
-            .map(|v| v.display())
-            .unwrap_or_else(|| error.to_string()),
-        _ => error.to_string(),
-    }
 }
 
 pub(crate) enum StepBoundaryOutcome {
@@ -809,7 +616,7 @@ impl crate::vm::Vm {
                 if let Some(popped_frame) = self.frames.pop() {
                     self.release_sync_guards_for_frame(self.frames.len() + 1);
                     if let Some(ref dir) = popped_frame.saved_source_dir {
-                        crate::stdlib::set_thread_source_dir(dir);
+                        self.runtime.set_source_dir(dir);
                     }
                     let current_depth = self.frames.len();
                     self.exception_handlers

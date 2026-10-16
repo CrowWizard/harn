@@ -1,14 +1,64 @@
-//! Capability-policy type unit tests.
-//!
-//! Split out of `types.rs` to keep that module within the
-//! source-file-length ratchet; the module path is unchanged.
+//! Capability authority, attenuation, and wire compatibility.
 
 use std::collections::BTreeMap;
 
 use super::{
-    intersect_roots, sandbox_profile_strictness, CapabilityPolicy, ModelPolicy,
-    ProcessNetworkProxy, ProcessSandboxPolicy, RequiredSuccessfulTool, SandboxProfile,
+    intersect_roots, sandbox_profile_strictness, CapabilityPolicy, ProcessNetworkProxy,
+    ProcessSandboxPolicy, SandboxProfile,
 };
+
+#[test]
+fn nested_profiles_preserve_the_outer_host_process_confinement() {
+    for outer in [SandboxProfile::Worktree, SandboxProfile::OsHardened] {
+        let ceiling = CapabilityPolicy {
+            sandbox_profile: outer,
+            ..Default::default()
+        };
+        for nested in SandboxProfile::all() {
+            let requested = CapabilityPolicy {
+                sandbox_profile: *nested,
+                ..Default::default()
+            };
+            let effective = ceiling.intersect(&requested).unwrap();
+            assert!(
+                effective.sandbox_profile.confines_processes(),
+                "{outer:?} lost host confinement under {nested:?}"
+            );
+            if !nested.confines_processes() {
+                assert!(ceiling.assert_within_ceiling(&requested).is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn flattened_policy_preserves_read_denials_and_the_host_namespace_helper() {
+    let mut ceiling = CapabilityPolicy::default();
+    ceiling.process_sandbox.read_deny_roots = vec!["/private/host-secret".into()];
+    ceiling.process_sandbox.netns_launcher_path = Some("/opt/host/netns".into());
+    assert!(ceiling.assert_within_ceiling(&ceiling).is_ok());
+
+    let mut narrower = ceiling.clone();
+    narrower
+        .process_sandbox
+        .read_deny_roots
+        .push("/private/stage-secret".into());
+    assert!(ceiling.assert_within_ceiling(&narrower).is_ok());
+
+    let mut dropped_denial = ceiling.clone();
+    dropped_denial.process_sandbox.read_deny_roots.clear();
+    let mut replaced_helper = ceiling.clone();
+    replaced_helper.process_sandbox.netns_launcher_path = Some("/tmp/stage/netns".into());
+    let mut dropped_helper = ceiling.clone();
+    dropped_helper.process_sandbox.netns_launcher_path = None;
+    for requested in [dropped_denial, replaced_helper, dropped_helper] {
+        assert!(ceiling.assert_within_ceiling(&requested).is_err());
+    }
+
+    let mut no_helper = ceiling.clone();
+    no_helper.process_sandbox.netns_launcher_path = None;
+    assert!(no_helper.assert_within_ceiling(&ceiling).is_err());
+}
 
 #[test]
 fn serialized_policy_cannot_inject_or_disclose_host_proxy_endpoints() {
@@ -90,27 +140,6 @@ fn a_neutral_policy_asserts_no_confinement_of_its_own() {
     assert_eq!(
         CapabilityPolicy::default().sandbox_profile,
         SandboxProfile::Worktree
-    );
-}
-
-#[test]
-fn model_policy_round_trips_required_successful_tool_or_groups() {
-    let value = serde_json::json!({
-        "require_successful_tools": ["verify", ["edit", "scaffold"]]
-    });
-
-    let policy: ModelPolicy = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        policy.require_successful_tools,
-        Some(vec![
-            RequiredSuccessfulTool::Tool("verify".to_string()),
-            RequiredSuccessfulTool::AnyOf(vec!["edit".to_string(), "scaffold".to_string()]),
-        ])
-    );
-    let serialized = serde_json::to_value(policy).unwrap();
-    assert_eq!(
-        serialized.get("require_successful_tools"),
-        value.get("require_successful_tools")
     );
 }
 

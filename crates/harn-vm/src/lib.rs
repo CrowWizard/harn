@@ -85,6 +85,8 @@ pub mod harness_system;
 pub mod harness_tenant;
 pub mod host_attachments;
 pub mod host_stdio;
+mod native_vm;
+pub(crate) mod runtime_effects;
 mod source_compile;
 pub mod task_retry;
 pub(crate) mod tool_call_mutations;
@@ -95,9 +97,9 @@ pub(crate) mod tool_call_mutations;
 /// single-threaded host may scope an execution tree to current-thread
 /// placement explicitly.
 pub mod subtask {
+    pub use crate::native_vm::subtask::scope_placement;
     pub use crate::vm::subtask::{
-        placement, scope_placement, SubtaskPlacement, SubtaskPlacementParseError, PLACEMENT_ENV,
-        PLACEMENT_VALUES,
+        placement, SubtaskPlacement, SubtaskPlacementParseError, PLACEMENT_ENV, PLACEMENT_VALUES,
     };
 }
 mod http;
@@ -210,7 +212,6 @@ pub mod user_dirs;
 /// fallback for embedders without an explicit bootstrap phase.
 pub fn initialize_runtime_assets() {
     secret_patterns::initialize_default_secret_patterns();
-    harness_methods::install();
 }
 
 /// A startup condition that must stop the process before any work begins.

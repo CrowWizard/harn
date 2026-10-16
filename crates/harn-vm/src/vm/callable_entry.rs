@@ -4,9 +4,9 @@ use std::time::Duration;
 use crate::chunk::ChunkRef;
 use crate::value::{VmError, VmValue};
 
-use super::{ScopeSpan, Vm};
+use super::Vm;
 
-pub(super) enum TopLevelEntry {
+pub(crate) enum TopLevelEntry {
     Chunk(ChunkRef),
     Callable {
         bootstrap: ChunkRef,
@@ -80,39 +80,9 @@ impl TopLevelEntry {
 }
 
 impl Vm {
-    /// Host projection of the bounded Harness evaluator with the VM's ordinary
-    /// execution scope, accounting and receipt ownership.
-    pub async fn evaluate_decision(
-        &mut self,
-        site_id: &str,
-        state: serde_json::Value,
-        questions: serde_json::Value,
-        policy: serde_json::Value,
-    ) -> Result<crate::llm::decision::EvaluationResult, VmError> {
-        self.ensure_execution_available()?;
-        let ambient = self.prepare_top_level_ambient();
-        let ctx = super::AsyncBuiltinCtx::from_inline_parent(self);
-        crate::orchestration::scope_ambient(ambient, async {
-            crate::llm::decision::evaluate_json(&ctx, site_id, state, questions, policy).await
-        })
-        .await
-    }
-
-    pub(super) fn prepare_top_level_ambient(
-        &mut self,
-    ) -> crate::orchestration::AmbientExecutionScope {
+    pub(super) fn prepare_top_level_scope(&mut self) -> Box<dyn super::VmExecutionScope> {
         self.prepare_execution_for_top_level();
-        self.capture_agent_cleanup_runtimes();
-        crate::orchestration::AmbientExecutionScope::capture_for_top_level_execution(
-            self.execution_id.clone(),
-            self.llm_mock_context.clone(),
-            self.worker_registry.clone(),
-            self.daemon_registry.clone(),
-            self.trigger_registry.clone(),
-            self.session_runtime.clone(),
-            self.tracing_runtime.clone(),
-            self.agent_host_session_runtime.clone(),
-        )
+        self.runtime.top_level_scope(&self.execution_id)
     }
 
     /// Execute a compiled callable entry with explicit values under a host
@@ -141,17 +111,15 @@ impl Vm {
         .await
     }
 
-    pub(super) async fn execute_top_level(
+    pub(crate) async fn execute_top_level(
         &mut self,
         entry: TopLevelEntry,
     ) -> Result<VmValue, VmError> {
         self.ensure_execution_available()?;
-        let registry = self.pool_registry.clone();
-        let ambient = self.prepare_top_level_ambient();
-        let execution = crate::stdlib::pool::with_pool_registry_scope(registry, async {
-            self.execute_entry_scoped(entry).await
-        });
-        let result = crate::orchestration::scope_ambient(ambient, execution).await;
+        let scope = self.prepare_top_level_scope();
+        let execution =
+            super::scope_runtime(scope, async { self.execute_entry_scoped(entry).await });
+        let result = execution.await;
         if self.owns_execution {
             if let Some(recorder) = self.flight_recorder.as_ref() {
                 match &result {
@@ -174,11 +142,16 @@ impl Vm {
         let _execution_activity = self
             .wait_for_graph
             .register_task(self.runtime_context.task_id.clone());
-        let _span = ScopeSpan::new(crate::tracing::SpanKind::Pipeline, "main".into());
+        let _span = self
+            .runtime
+            .start_span(super::VmSpanKind::Pipeline, "main".into());
         match entry.run(self).await {
-            Ok(value) => self.run_pipeline_finish_lifecycle(value).await,
+            Ok(value) => {
+                let runtime = Arc::clone(&self.runtime);
+                runtime.finish_pipeline(self, value).await
+            }
             Err(error) => {
-                crate::orchestration::clear_pipeline_on_finish();
+                self.runtime.clear_pipeline_finish();
                 Err(error)
             }
         }

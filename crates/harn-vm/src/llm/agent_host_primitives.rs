@@ -660,7 +660,7 @@ use super::agent_host_tool_dispatch::{
     ToolDispatchRequest,
 };
 
-pub(super) async fn host_agent_dispatch_tool_call(
+pub(crate) async fn host_agent_dispatch_tool_call(
     ctx: crate::vm::AsyncBuiltinCtx,
     call: VmValue,
     tools: Option<&VmValue>,
@@ -1717,10 +1717,7 @@ async fn host_mcp_bootstrap_impl(
     let mut tools_added: Vec<serde_json::Value> = Vec::new();
     let mut server_infos: Vec<serde_json::Value> = Vec::new();
     let mut errors: Vec<serde_json::Value> = Vec::new();
-    let fixtures = ctx
-        .child_vm()
-        .harness()
-        .map(|harness| harness.inner().fixtures_arc());
+    let fixtures = crate::harness::context_fixtures(&ctx)?;
 
     for spec in &specs_list {
         let server_name = spec

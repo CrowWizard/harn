@@ -2,6 +2,62 @@
   "issue": 9649,
   "baselineRevision": "7deefa6d8215dc5ce0bac2705624516d17c89392",
   "removedCases": [
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "every_call_in_the_canonical_dispatch_is_classified",
+    "reason": "REMOVED: a handwritten table and call-spelling scanner classified source text without exercising ACP dispatch. Runtime ownership remains in the canonical host builtin, with executable ACP memo and command-policy coverage; classification of every future source callee is no longer a unit-test claim.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "process_exec_host_call_is_gated_by_command_policy_on_acp_bridge"
+  },
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "the_census_describes_only_calls_that_exist",
+    "reason": "REMOVED: this tested the source scanner and its exemption list. A renamed fixture lookup changed the scanned spelling while preserving the canonical runtime route. Retained ACP dispatch tests prove their named behavior by invoking it.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "turn_stable_read_is_served_without_an_acp_round_trip"
+  },
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "runtime_owned_divergences_carry_a_tracking_issue",
+    "reason": "REMOVED: assertions over handwritten ownership flags and issue numbers did not observe an ACP execution. The retained command-policy check drives an allowed and denied real bridge route.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "process_exec_host_call_is_gated_by_command_policy_on_acp_bridge"
+  },
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "the_per_turn_memo_is_observed_over_acp",
+    "reason": "SUBSUMED: asserting a handwritten acp_observes boolean cannot prove cache admission. The retained ACP test counts actual host bridge calls across repeated reads, and its non-turn-stable sibling is the bypass control.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "turn_stable_read_is_served_without_an_acp_round_trip"
+  },
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "every_runtime_owned_branch_is_observed_over_acp",
+    "reason": "REMOVED: this checked static booleans rather than reaching runtime branches. Canonical ACP behavior is covered by executed memo, invalidation and process-policy tests; no exhaustive per-callee coverage claim is carried forward.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "metadata_write_invalidates_a_memoized_acp_read_before_the_next_dispatch"
+  },
+  {
+    "path": "crates/harn-vm/tests/acp_host_call_parity.rs",
+    "name": "every_entry_states_its_reasoning",
+    "reason": "REMOVED: a minimum rationale length on a handwritten source census tested prose rather than behavior. The retained ACP route tests assert real dispatch outcomes.",
+    "retainedPath": "crates/harn-serve/src/adapters/acp/tests/host_call_turn_cache.rs",
+    "retainedName": "non_turn_stable_read_still_reaches_the_editor"
+  },
+    {
+      "path": "crates/harn-vm/tests/harn_vm/thread_local_audit.rs",
+      "name": "pool_worker_boundary_uses_task_local_registry_not_thread_local_registry",
+      "reason": "SUBSUMED: source-substring checks failed when the task-local moved into its owning module. The retained test drives the real worker boundary, requires a different OS thread, and compares the actual inherited pool registry identity against a distinct parent fallback.",
+      "retainedPath": "crates/harn-vm/src/native_vm/subtask/cross_thread_tests.rs",
+      "retainedName": "subtask_inherits_budget_session_and_event_log_across_threads"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/async_builtin.rs",
+      "name": "cancelled_scope_strands_nothing",
+      "reason": "SUBSUMED: the removed case dropped an unpolled future without assertions. The replacement polls the actual async builtin seam, proves that it installed the child's distinct pool, and verifies restoration both before and after cancellation.",
+      "retainedPath": "crates/harn-vm/src/native_vm/context/tests.rs",
+      "retainedName": "pending_builtin_restores_the_callers_pool_before_cancellation"
+    },
     {
       "path": "crates/harn-lint/src/tests/unused.rs",
       "name": "test_unused_variable",
@@ -1385,14 +1441,14 @@
       "path": "crates/harn-vm/src/tool_annotations.rs",
       "name": "arg_schema_defaults_empty",
       "reason": "Vacuous: only checks that the compiler-derived Default of ToolArgSchema leaves its collection fields empty.",
-      "retainedPath": "crates/harn-vm/src/tool_annotations.rs",
+      "retainedPath": "crates/harn-execution-policy/src/tool_annotations.rs",
       "retainedAssertion": "#[derive(Default)] on ToolArgSchema"
     },
     {
       "path": "crates/harn-vm/src/tool_annotations.rs",
       "name": "annotations_default_result_routes_empty",
       "reason": "Vacuous: only checks that the compiler-derived Default of ToolAnnotations yields false, empty, and None fields.",
-      "retainedPath": "crates/harn-vm/src/tool_annotations.rs",
+      "retainedPath": "crates/harn-execution-policy/src/tool_annotations.rs",
       "retainedAssertion": "#[derive(Default)] on ToolAnnotations"
     },
     {
@@ -1930,6 +1986,133 @@
       "reason": "SUBSUMED: Repeats full artifact generation and validation, then accepts every error except one prose substring. The retained test rejects every validation error; validation_rejects_local_strengths_inheriting_cloud_decoration still proves this rule fires.",
       "retainedPath": "crates/harn-vm/src/provider_catalog/tests.rs",
       "retainedName": "generated_catalog_validates"
+    },
+    {
+      "path": "crates/harn-vm/src/bridge/tests.rs",
+      "name": "test_json_result_to_vm_value_string",
+      "reason": "SUBSUMED: the bridge converter is now a direct re-export of the value-layer converter. The product-path JSON fixture parses and prints the same string through that converter.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/bridge/tests.rs",
+      "name": "test_json_result_to_vm_value_dict",
+      "reason": "SUBSUMED: the bridge converter is now a direct re-export. The product-path JSON fixture reads both string and integer object fields through the same value-layer converter.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/bridge/tests.rs",
+      "name": "test_json_result_to_vm_value_null",
+      "reason": "SUBSUMED: the bridge converter is now a direct re-export. The product-path JSON fixture proves the same converter maps JSON null to Harn nil.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/bridge/tests.rs",
+      "name": "test_json_result_to_vm_value_nested",
+      "reason": "SUBSUMED: the bridge converter is now a direct re-export. The product-path JSON fixture checks nested object/array values through the converter, while the removed case checked only the array length.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/harness_seam.rs",
+      "name": "an_uninstalled_seam_is_an_error",
+      "reason": "STRUCTURAL: the process-global optional slot was deleted. Vm construction requires VmRuntime, whose harness_methods method must provide a dispatcher and has no default implementation or absent state.",
+      "retainedPath": "crates/harn-vm/src/vm/runtime.rs"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/harness_seam.rs",
+      "name": "vm_new_installs_the_seam",
+      "reason": "STRUCTURAL: native Vm construction supplies NativeExecutionState directly; there is no installation bit. The JSON conformance fixture reaches native Harness method dispatch through the real constructor.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_hello_world",
+      "reason": "SUBSUMED: the CLI string-concatenation fixture compares the complete logged greeting, including the same [harn] prefix and newline, through the production constructor and output adapter.",
+      "retainedPath": "conformance/tests/strings/string_concat.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_string_concat_new",
+      "reason": "SUBSUMED: the CLI fixture checks concatenated string contents through the canonical compiler and runtime, with exact expected output.",
+      "retainedPath": "conformance/tests/strings/string_concat.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_if_else_new",
+      "reason": "SUBSUMED: the CLI fixture exercises both true and false conditions and checks that only the selected branches print.",
+      "retainedPath": "conformance/tests/control_flow/if_else.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_while_loop_new",
+      "reason": "SUBSUMED: the CLI fixture mutates a loop counter across five iterations and checks its terminal value through the canonical runtime.",
+      "retainedPath": "conformance/tests/control_flow/while_loop.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_function_call_new",
+      "reason": "SUBSUMED: the retained native test makes the same untyped add-function call; functions/fn_decl.harn also proves the public typed CLI path.",
+      "retainedPath": "crates/harn-vm/src/vm/tests_runtime/language.rs",
+      "retainedName": "test_fn_decl_and_call"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_recursion",
+      "reason": "SUBSUMED: the CLI fixture executes the same non-tail-recursive factorial body at n=5 and compares the resulting 120, while also checking recursive return inference.",
+      "retainedPath": "conformance/tests/types/fn_return_inference.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_try_catch_new",
+      "reason": "SUBSUMED: the CLI fixture throws a string, catches it, and checks the complete logged exception value.",
+      "retainedPath": "conformance/tests/errors_by_feature/throw_catch.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_try_no_error_new",
+      "reason": "SUBSUMED: the CLI fixture checks normal try completion and that the catch branch does not execute.",
+      "retainedPath": "conformance/tests/errors_by_feature/try_no_error.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_list_map_new",
+      "reason": "SUBSUMED: the CLI fixture maps the same [1, 2, 3] through x * 2 and compares every output element.",
+      "retainedPath": "conformance/tests/collections/list_map.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_list_filter_new",
+      "reason": "SUBSUMED: the CLI fixture exercises accepted and rejected list elements and compares the complete filtered result.",
+      "retainedPath": "conformance/tests/collections/list_filter.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_dict_access_new",
+      "reason": "SUBSUMED: the CLI fixture reads both string and integer dictionary fields and checks their exact values.",
+      "retainedPath": "conformance/tests/collections/dict_access.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_string_interpolation",
+      "reason": "SUBSUMED: the CLI fixture checks variable interpolation, arithmetic inside interpolation, and multiple interpolated values.",
+      "retainedPath": "conformance/tests/strings/string_interpolation.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_match_new",
+      "reason": "SUBSUMED: the CLI fixture selects the same middle string-match branch and checks that adjacent branches do not print.",
+      "retainedPath": "conformance/tests/control_flow/match.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_json_roundtrip",
+      "reason": "SUBSUMED: the removed test only searched serialized text for a key and digit. The CLI fixture decodes serialized objects and arrays and compares the actual nested values and integer limits.",
+      "retainedPath": "conformance/tests/stdlib/json/json_roundtrip.harn"
+    },
+    {
+      "path": "crates/harn-vm/src/vm/tests_runtime/smoke.rs",
+      "name": "test_type_of",
+      "reason": "SUBSUMED: the CLI fixture branches on runtime string and int type names, including 42, with nil and inverted-predicate controls.",
+      "retainedPath": "conformance/tests/types/type_narrowing_typeof.harn"
     }
   ],
   "retainedScenarios": [

@@ -335,8 +335,9 @@ async fn stream_capped_unordered<F, T>(
 
 impl super::super::Vm {
     pub(super) async fn execute_parallel(&mut self) -> Result<(), VmError> {
-        let _par_span =
-            super::super::ScopeSpan::new(crate::tracing::SpanKind::Parallel, "parallel".into());
+        let _par_span = self
+            .runtime
+            .start_span(super::super::VmSpanKind::Parallel, "parallel".into());
         let closure = self.pop()?;
         let count_val = self.pop()?;
         let cap_val = self.pop()?;
@@ -364,9 +365,9 @@ impl super::super::Vm {
                     Some(task_group_id.clone()),
                 );
                 task_ids.push(task_id);
-                let registry = child.pool_registry.clone();
+                let scope = child.runtime.subtask_scope();
                 let closure = closure.clone();
-                futures.push(subtask::prepare(registry, async move {
+                futures.push(subtask::prepare(scope, async move {
                     let arg = VmValue::Int(i as i64);
                     let result = child
                         .call_closure_args(&closure, CallArgs::One(&arg))
@@ -426,10 +427,10 @@ impl super::super::Vm {
                         Some(task_group_id.clone()),
                     );
                     task_ids.push(task_id);
-                    let registry = child.pool_registry.clone();
+                    let scope = child.runtime.subtask_scope();
                     let closure = closure.clone();
                     let item = item.clone();
-                    futures.push(subtask::prepare(registry, async move {
+                    futures.push(subtask::prepare(scope, async move {
                         let result = child
                             .call_closure_args(&closure, CallArgs::One(&item))
                             .await?;
@@ -488,10 +489,10 @@ impl super::super::Vm {
                         "parallel each as stream",
                         Some(task_group_id.clone()),
                     );
-                    let registry = child.pool_registry.clone();
+                    let scope = child.runtime.subtask_scope();
                     let closure = closure.clone();
                     let item = item.clone();
-                    futures.push(subtask::prepare(registry, async move {
+                    futures.push(subtask::prepare(scope, async move {
                         child
                             .call_closure_args(&closure, CallArgs::One(&item))
                             .await
@@ -500,9 +501,9 @@ impl super::super::Vm {
 
                 let (tx, rx) = tokio::sync::mpsc::channel::<Result<VmValue, VmError>>(1);
                 let cancel = VmStreamCancel::new();
-                let registry = self.pool_registry.clone();
+                let scope = self.runtime.subtask_scope();
                 subtask::spawn(subtask::prepare(
-                    registry,
+                    scope,
                     stream_capped_unordered(
                         futures,
                         cap,
@@ -549,10 +550,10 @@ impl super::super::Vm {
                         Some(task_group_id.clone()),
                     );
                     task_ids.push(task_id);
-                    let registry = child.pool_registry.clone();
+                    let scope = child.runtime.subtask_scope();
                     let closure = closure.clone();
                     let item = item.clone();
-                    futures.push(subtask::prepare(registry, async move {
+                    futures.push(subtask::prepare(scope, async move {
                         let result = child
                             .call_closure_args(&closure, CallArgs::One(&item))
                             .await;
@@ -618,8 +619,9 @@ impl super::super::Vm {
     }
 
     pub(super) fn execute_spawn(&mut self) -> Result<(), VmError> {
-        let _spawn_span =
-            super::super::ScopeSpan::new(crate::tracing::SpanKind::Spawn, "spawn".into());
+        let _spawn_span = self
+            .runtime
+            .start_span(super::super::VmSpanKind::Spawn, "spawn".into());
         let closure = self.pop()?;
         if let VmValue::Closure(closure) = closure {
             self.task_counter += 1;
@@ -634,9 +636,9 @@ impl super::super::Vm {
                     .child_task(runtime_task_id.clone(), "spawn", None);
             let cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
             child.cancel_token = Some(cancel_token.clone());
-            let registry = child.pool_registry.clone();
+            let scope = child.runtime.subtask_scope();
             let scheduled_activity = self.wait_for_graph.register_task(runtime_task_id.clone());
-            let handle = subtask::spawn_child(registry, async move {
+            let handle = subtask::spawn_child(scope, async move {
                 let _scheduled_activity = scheduled_activity;
                 let result = child.call_closure_args(&closure, CallArgs::Empty).await?;
                 Ok((result, std::mem::take(&mut child.output)))
@@ -694,10 +696,7 @@ impl super::super::Vm {
                         "task_scope.cancel_cleanup",
                         &format!("durable sibling cleanup remains pending: {error}"),
                     );
-                    super::call_support::schedule_task_cleanup(
-                        pending.task_id,
-                        pending.runtimes.as_ref().clone(),
-                    );
+                    super::call_support::schedule_task_cleanup(pending.task_id, pending.runtimes);
                     cleanup_error.get_or_insert(error);
                 }
                 continue;
@@ -814,10 +813,10 @@ mod scheduler_tests {
     fn prepare_branches(
         branches: Vec<Branch>,
     ) -> Vec<subtask::PreparedSubtask<impl Future<Output = Result<(), VmError>>>> {
-        let registry = crate::stdlib::pool::new_pool_registry();
+        let vm = crate::Vm::new();
         branches
             .into_iter()
-            .map(|branch| subtask::prepare(Arc::clone(&registry), branch))
+            .map(|branch| subtask::prepare(vm.runtime.subtask_scope(), branch))
             .collect()
     }
 

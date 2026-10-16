@@ -1396,10 +1396,7 @@ impl HostBridge {
     }
 }
 
-/// Convert a serde_json::Value to a VmValue.
-pub fn json_result_to_vm_value(val: &serde_json::Value) -> VmValue {
-    crate::stdlib::json_to_vm_value(val)
-}
+pub use crate::value::json::json_to_vm_value as json_result_to_vm_value;
 
 fn parse_host_tools_list_response(
     result: serde_json::Value,

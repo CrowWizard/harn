@@ -17,7 +17,7 @@ use crate::prepared_module::PreparedModuleArtifact;
 use crate::value::{ModuleFunctionRegistry, VmClosure, VmEnv, VmError, VmValue};
 
 use super::stdlib_artifact::stdlib_module_artifact;
-use super::{ScopeSpan, Vm};
+use super::Vm;
 
 mod shared_instances;
 mod transaction;
@@ -664,7 +664,7 @@ impl Vm {
             // the persona/step context here and restore it after init
             // so module loading is invisible to the step-tracking
             // surface.
-            let active_context = crate::step_runtime::suspend_active_context();
+            let active_context = self.runtime.suspend_active_context();
             let init_result: Result<(), VmError> = async {
                 for chunk in &artifact.type_schema_init_chunks {
                     self.run_chunk(Arc::clone(chunk)).await?;
@@ -989,7 +989,9 @@ impl Vm {
         provenance: ModuleProvenance,
     ) -> Pin<Box<dyn Future<Output = Result<(), VmError>> + Send + 'a>> {
         Box::pin(async move {
-            let _import_span = ScopeSpan::new(crate::tracing::SpanKind::Import, path.to_string());
+            let _import_span = self
+                .runtime
+                .start_span(super::VmSpanKind::Import, path.to_string());
 
             let stdlib_module = path
                 .strip_prefix("std/")

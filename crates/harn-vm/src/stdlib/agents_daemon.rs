@@ -1,3 +1,4 @@
+use crate::native_vm::NativeVmState;
 use crate::value::VmDictExt;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -435,17 +436,18 @@ async fn daemon_stop_builtin(
     };
     if start_cleanup {
         let cleanup_state = state.clone();
-        let cleanup = crate::vm::subtask::spawn_inherited_child(ctx.pool_registry(), async move {
-            if let Err(error) = finish_daemon_stop(cleanup_state.clone()).await {
-                let mut daemon = cleanup_state.lock();
-                // Distinguish an incomplete stop from a naturally failed
-                // daemon. Retrying daemon_stop is safe; daemon_resume is not.
-                daemon.status = "stop_failed".to_string();
-                daemon.last_error = Some(error.to_string());
-                daemon.stop_requested = false;
-                let _ = persist_daemon_meta(&daemon);
-            }
-        });
+        let cleanup =
+            crate::native_vm::subtask::spawn_inherited_child(ctx.pool_registry(), async move {
+                if let Err(error) = finish_daemon_stop(cleanup_state.clone()).await {
+                    let mut daemon = cleanup_state.lock();
+                    // Distinguish an incomplete stop from a naturally failed
+                    // daemon. Retrying daemon_stop is safe; daemon_resume is not.
+                    daemon.status = "stop_failed".to_string();
+                    daemon.last_error = Some(error.to_string());
+                    daemon.stop_requested = false;
+                    let _ = persist_daemon_meta(&daemon);
+                }
+            });
         drop(cleanup);
     }
 
@@ -998,8 +1000,8 @@ fn spawn_daemon_task(state: Arc<parking_lot::Mutex<DaemonState>>, mut vm: crate:
     };
     vm.set_bridge(bridge.clone());
     let task_state = state.clone();
-    let pool_registry = vm.pool_registry.clone();
-    let handle = crate::vm::subtask::spawn_child(pool_registry, async move {
+    let pool_registry = vm.native().pool_registry.clone();
+    let handle = crate::native_vm::subtask::spawn_child(pool_registry, async move {
         let harness = vm.root_harness_value().ok_or_else(|| {
             VmError::Runtime("daemon agent loop has no root Harness authority".to_string())
         })?;
