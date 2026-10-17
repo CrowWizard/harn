@@ -51,6 +51,17 @@ async fn connector_http_get_uses_read_authority_and_preserves_retry() {
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().to_path_buf();
+    let child_marker = root.path().join(".harn-tmp/http-child-launched");
+    std::fs::create_dir_all(child_marker.parent().unwrap()).unwrap();
+    #[cfg(target_os = "macos")]
+    let child_refusal = harn_cli::tests::common::sandbox_host::unavailable_worktree_sandbox();
+    #[cfg(not(target_os = "macos"))]
+    let child_refusal: Option<harn_vm::process_sandbox::SandboxMechanismUnavailable> = None;
+    let expected_child_refusal = child_refusal
+        .as_ref()
+        .map(|refusal| harn_vm::value::json::vm_value_to_json(&refusal.thrown_value()).to_string())
+        .unwrap_or_else(|| "nil".to_string());
     let script = root.path().join("connector_read.harn");
     std::fs::write(&script, r#"
 import { connector_http_json } from "std/connectors/http"
@@ -79,17 +90,26 @@ fn main(harness: Harness) {
   harness.stdio.println("GET retry reached; POST refused without mutation grant")
 }
 "#.replace("PROBE_ADDRESS", &address.to_string()).replace("CHILD_CONTROL", if cfg!(unix) {
-        r#"const child = harness.process.run({program: "/usr/bin/python3", args: ["-c", "import socket; print('child-launched', flush=True); socket.create_connection(('127.0.0.1', CHILD_PORT))"]})
-  assert(!child.success)
-  assert(child.stdout.contains("child-launched"), json_stringify(child))
-  assert(child.stderr.contains("PermissionError"), json_stringify(child))"#
-    } else { "" }).replace("CHILD_PORT", &address.port().to_string())).unwrap();
+        r#"const attempted = try { harness.process.run({program: "/usr/bin/python3", args: ["-c", "import pathlib, socket, sys; pathlib.Path(sys.argv[1]).write_text('launched'); print('child-launched', flush=True); socket.create_connection(('127.0.0.1', CHILD_PORT))", CHILD_MARKER]}) }
+  const expected_refusal = EXPECTED_CHILD_REFUSAL
+  if expected_refusal != nil {
+    assert(is_err(attempted), "unsupported host must refuse the child")
+    assert_eq(unwrap_err(attempted), expected_refusal)
+  } else {
+    const child = unwrap(attempted)
+    assert(!child.success)
+    assert(child.stdout.contains("child-launched"), json_stringify(child))
+    assert(child.stderr.contains("PermissionError"), json_stringify(child))
+  }"#
+    } else { "" }).replace("CHILD_PORT", &address.port().to_string())
+        .replace("CHILD_MARKER", &serde_json::to_string(&child_marker).unwrap())
+        .replace("EXPECTED_CHILD_REFUSAL", &expected_child_refusal)).unwrap();
     let observations = received.clone();
     let output = tokio::task::spawn_blocking(move || {
         let command = || {
             let mut command = crate::test_util::process::harn_e2e_command();
             command
-                .current_dir(root.path())
+                .current_dir(&workspace)
                 .env_remove("HARN_EGRESS_ALLOW")
                 .env_remove("HARN_EGRESS_DENY")
                 .env_remove("HARN_EGRESS_DEFAULT")
@@ -127,6 +147,11 @@ fn main(harness: Harness) {
         "stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        child_marker.is_file(),
+        cfg!(unix) && child_refusal.is_none(),
+        "supported confinement must launch the network-denied child; an unavailable backend must refuse before launch"
     );
     assert_eq!(
         *received.lock().unwrap(),
