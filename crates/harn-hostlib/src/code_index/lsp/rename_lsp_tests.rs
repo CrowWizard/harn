@@ -829,3 +829,93 @@ fn python_server_renames_through_annotations_and_imports() {
         "from typing import Optional\n\nfrom readings.model import Measurement, average\n\nLABEL = \"Reading\"\n\n\ndef latest(items: list[Measurement]) -> Optional[Measurement]:\n    first: list[Measurement] = items[:1]\n    return average(first) if first else None\n"
     );
 }
+
+const GO_MODULE: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/readings\n\ngo 1.22\n"),
+    (
+        "reading/reading.go",
+        "package reading\n\n// Reading is one sensor value.\ntype Reading struct {\n\tValue float64\n}\n\n// Average returns the mean Reading.\nfunc Average(items []Reading) Reading {\n\ttotal := 0.0\n\tfor _, item := range items {\n\t\ttotal += item.Value\n\t}\n\treturn Reading{Value: total / float64(len(items))}\n}\n",
+    ),
+    (
+        "reading/pair.go",
+        "package reading\n\n// Pair duplicates a value; Reading here is a type parameter.\nfunc Pair[Reading any](value Reading) (Reading, Reading) {\n\treturn value, value\n}\n",
+    ),
+    (
+        "report/report.go",
+        "package report\n\nimport \"example.com/readings/reading\"\n\nconst Label = \"Reading\"\n\nfunc Latest(all map[string]*reading.Reading) []reading.Reading {\n\tout := []reading.Reading{}\n\tfor _, item := range all {\n\t\tout = append(out, *item)\n\t}\n\treturn append(out, reading.Reading{Value: 1})\n}\n",
+    ),
+];
+
+// tempfile names directories `.tmpXXXX`; Go skips dot-prefixed paths when
+// gopls loads `root/...`, so this also covers the dot-free root alias.
+#[test]
+fn gopls_renames_across_packages_and_leaves_type_parameters() {
+    let _env = crate::process::test_support::declare_inherited();
+    let dir = tempdir().unwrap();
+    write_tree(dir.path(), GO_MODULE);
+    let capability = index(dir.path());
+    let Some(result) = server_rename(&capability, "reading/reading.go", "Reading", "Measurement")
+    else {
+        return;
+    };
+    assert_eq!(s(field(&result, "result")), "applied", "{result:?}");
+    assert_eq!(s(field(field(&result, "backend"), "server")), "gopls");
+    let read = |path: &str| fs::read_to_string(dir.path().join(path)).unwrap();
+    assert_eq!(
+        read("reading/reading.go"),
+        "package reading\n\n// Measurement is one sensor value.\ntype Measurement struct {\n\tValue float64\n}\n\n// Average returns the mean Reading.\nfunc Average(items []Measurement) Measurement {\n\ttotal := 0.0\n\tfor _, item := range items {\n\t\ttotal += item.Value\n\t}\n\treturn Measurement{Value: total / float64(len(items))}\n}\n"
+    );
+    assert_eq!(
+        read("reading/pair.go"),
+        GO_MODULE[2].1,
+        "type parameter must stay"
+    );
+    assert_eq!(
+        read("report/report.go"),
+        "package report\n\nimport \"example.com/readings/reading\"\n\nconst Label = \"Reading\"\n\nfunc Latest(all map[string]*reading.Measurement) []reading.Measurement {\n\tout := []reading.Measurement{}\n\tfor _, item := range all {\n\t\tout = append(out, *item)\n\t}\n\treturn append(out, reading.Measurement{Value: 1})\n}\n"
+    );
+}
+
+#[test]
+fn a_go_file_outside_the_build_falls_back() {
+    let _env = crate::process::test_support::declare_inherited();
+    let dir = tempdir().unwrap();
+    let mut files = GO_MODULE.to_vec();
+    // gopls loads only the host platform's build, so it never sees this file.
+    let excluded = "//go:build windows\n\npackage report\n\nimport \"example.com/readings/reading\"\n\nfunc OnWindows() reading.Reading {\n\treturn reading.Reading{}\n}\n";
+    files.push(("report/report_windows.go", excluded));
+    write_tree(dir.path(), &files);
+    let capability = index(dir.path());
+    let probe = tempdir().unwrap();
+    write_tree(probe.path(), GO_MODULE);
+    if server_rename(
+        &index(probe.path()),
+        "reading/reading.go",
+        "Reading",
+        "Probe",
+    )
+    .is_none()
+    {
+        return;
+    }
+    let strict = rename(
+        &capability,
+        "reading/reading.go",
+        "Reading",
+        "Measurement",
+        "language_server",
+    );
+    assert_eq!(
+        s(field(&strict, "result")),
+        "backend_unavailable",
+        "{strict:?}"
+    );
+    assert!(
+        s(field(&strict, "details")).contains("report/report_windows.go"),
+        "{strict:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("report/report_windows.go")).unwrap(),
+        excluded
+    );
+}
