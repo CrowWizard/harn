@@ -2277,7 +2277,7 @@ public enum HarnMCPOAuthApplicationType: String, Codable, Sendable, CaseIterable
     ].map { Self(rawValue: $0)! }
 }
 
-public enum HarnACPValue: Codable, Sendable, Equatable {
+public enum HarnACPValue: Codable, Sendable, Equatable, Hashable {
     case null
     case bool(Bool)
     case int(Int)

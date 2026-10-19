@@ -35,6 +35,7 @@ mod values;
 
 mod go;
 mod python;
+mod run_session_view;
 mod rust;
 mod swift;
 mod typescript;
@@ -130,6 +131,7 @@ pub(crate) fn run(output_dir: &str, check_only: bool) {
 fn generate_artifacts(source: &ProtocolArtifactSource) -> Result<Vec<Artifact>, String> {
     use records::Target;
     let agents = agents_api::AgentsApiProjection::load(source)?;
+    let view_schema = run_session_view::schema();
     let external_actions = ExternalActionVocabulary::load(source)?;
     let connector_setup = ConnectorSetupVocabulary::load(source)?;
     let activity = ActivityVocabulary::load(source)?;
@@ -137,6 +139,14 @@ fn generate_artifacts(source: &ProtocolArtifactSource) -> Result<Vec<Artifact>, 
     let go_artifact =
         format_go_source(agents.append(generate_go_artifact(&session_updates)?, Target::Go))?;
     let mut artifacts = vec![
+        Artifact::new(
+            run_session_view::SWIFT_ARTIFACT,
+            run_session_view::generate_swift(&view_schema)?,
+        ),
+        Artifact::new(
+            harn_vm::orchestration::RUN_SESSION_VIEW_SCHEMA_ARTIFACT,
+            serde_json::to_string_pretty(&view_schema).map_err(|error| error.to_string())?,
+        ),
         Artifact::new("README.md", generate_readme()),
         Artifact::new(
             "manifest.json",

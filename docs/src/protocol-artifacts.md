@@ -34,6 +34,14 @@ The generated contract includes:
   A2A task events, and MCP tool/resource/prompt metadata.
 - `HarnProtocol.swift`: Swift `Codable` definitions for the same
   host-facing surface.
+- `HarnRunSessionView.swift`: Swift run/session view records derived from
+  native Rust schemas and deserialize defaults. Compile it alongside
+  `HarnProtocol.swift`. The corresponding
+  `schemas/run-session-view-v1.schema.json` retains full native fields;
+  reasoning and evaluation receipts remain opaque JSON arrays, preserving
+  unreported versus measured-empty evidence. Hosts check the supported schema
+  and version once before using a decoded view. Missing historical producer
+  identity stays unknown; newly produced views identify the current runtime.
 - `HarnAgentsEventProjection` and `HarnAgentsTaskStatus`: stream identity,
   payload, and task-state bindings derived from `harn-serve/openapi.yaml`.
   A `session.update` event already carries canonical ACP params in `payload`.
