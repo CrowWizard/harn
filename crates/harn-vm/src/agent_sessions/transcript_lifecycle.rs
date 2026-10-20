@@ -48,6 +48,12 @@ pub(crate) fn append_terminal_event_once(id: &str, event: VmValue) -> Result<VmV
                     format!("agent_session_append_terminal_event: session '{id}' lost its terminal record")
                 });
         }
+        let cancelled = event.as_dict()
+            .and_then(|event| event.get("metadata"))
+            .and_then(VmValue::as_dict)
+            .and_then(|metadata| metadata.get("final_status"))
+            .is_some_and(|status| matches!(status, VmValue::String(value) if value.as_str() == "cancelled"));
+        goal::finish_before_terminal(state, cancelled)?;
         append_event_to_state(state, event.clone(), "append_terminal_event")?;
         Ok(event)
     })
@@ -780,5 +786,125 @@ pub(crate) fn retire_goal_pins(id: &str) -> Result<(), String> {
     for reminder in reminders {
         revoke_reminder(id, &reminder.id)?;
     }
+    Ok(())
+}
+
+/// Reset the transcript and goal, durable before returning. A live run's
+/// journal carries it. Outside a run, the session's owning canonical store is
+/// claimed under its writer lease and the reset is written there before memory
+/// changes. The store is the one an earlier run in this process used, else the
+/// one `options` (a run's options, or store configuration when `None`) resolve
+/// to. If neither holds the session, only memory is reset: there is no history
+/// this reset can reach. Other mutations are refused while the write is in
+/// flight, so nothing can land between the planned and the applied reset.
+pub async fn reset_session(
+    id: &str,
+    options: Option<&crate::value::DictMap>,
+) -> Result<bool, crate::value::VmError> {
+    use crate::value::VmError;
+    let Some((live, known_dir)) = SESSIONS.with(|s| {
+        s.borrow().get(id).map(|state| {
+            (
+                state.transcript_journal.is_some(),
+                state.canonical_store_dir.clone(),
+            )
+        })
+    }) else {
+        return Ok(false);
+    };
+    if live {
+        let reset = try_reset_transcript(id).map_err(VmError::Runtime)?;
+        if reset {
+            crate::agent_session_journal::flush(id).await?;
+        }
+        return Ok(reset);
+    }
+    let Some(journal) =
+        crate::agent_session_journal::prepare_standalone(id, known_dir, options, "agent_reset")
+            .await?
+    else {
+        return try_reset_transcript(id).map_err(VmError::Runtime);
+    };
+    let mut journal = Some(journal);
+    let plan = SESSIONS
+        .with(|s| {
+            let mut map = s.borrow_mut();
+            let Some(state) = map.get_mut(id) else {
+                return Ok(None);
+            };
+            let plan = goal::plan_reset(state)?;
+            state.reset_in_flight = true;
+            Ok(Some(plan))
+        })
+        .map_err(VmError::Runtime)?;
+    let Some(plan) = plan else {
+        return Ok(false);
+    };
+    let in_flight = ResetInFlight(id);
+    plan.enqueue(&mut journal);
+    let written = match &journal {
+        Some(journal) => crate::agent_session_journal::persist_standalone(id, journal).await,
+        None => Ok(()),
+    };
+    drop(journal);
+    drop(in_flight);
+    SESSIONS.with(|s| {
+        let mut map = s.borrow_mut();
+        let Some(state) = map.get_mut(id) else {
+            return written.map(|()| false);
+        };
+        written?;
+        apply_reset(state, plan).map_err(VmError::Runtime)?;
+        Ok(true)
+    })
+}
+
+/// Clears a session's in-flight reset mark on every exit from the write,
+/// including a dropped future or a panic.
+struct ResetInFlight<'a>(&'a str);
+
+impl Drop for ResetInFlight<'_> {
+    fn drop(&mut self) {
+        // Dropped only outside a sessions borrow, so this lock cannot self-deadlock.
+        SESSIONS.with(|s| {
+            if let Some(state) = s.borrow_mut().get_mut(self.0) {
+                state.reset_in_flight = false;
+            }
+        });
+    }
+}
+
+/// Memory-only reset for tests that exercise the in-memory transition alone.
+#[cfg(test)]
+pub(crate) fn reset_transcript_in_memory(id: &str) -> bool {
+    matches!(try_reset_transcript(id), Ok(true))
+}
+
+fn try_reset_transcript(id: &str) -> Result<bool, String> {
+    SESSIONS.with(|s| {
+        let mut map = s.borrow_mut();
+        let Some(state) = map.get_mut(id) else {
+            return Ok(false);
+        };
+        let plan = goal::plan_reset(state)?;
+        apply_reset(state, plan.clone())?;
+        plan.enqueue(&mut state.transcript_journal);
+        Ok(true)
+    })
+}
+
+fn apply_reset(state: &mut SessionState, plan: goal::ResetPlan) -> Result<(), String> {
+    state.replace_transcript(empty_transcript(&state.id))?;
+    state.goal = plan.goal;
+    state.tool_format = None;
+    state.system_prompt = None;
+    state.scratchpad = None;
+    state.scratchpad_version = 0;
+    state.last_transcript_budget_action = None;
+    state.completed_turn_checkpoints.clear();
+    state.redo_stack.clear();
+    state.text_tool_call_seq = 0;
+    *state.health = Default::default();
+    state.touch();
     Ok(())
 }

@@ -28,6 +28,8 @@ pub(crate) use run_preparation::{
 mod run_preparation_tests;
 pub(crate) use queue::JournalAuditWriter;
 use queue::JournalQueue;
+/// Where a session's canonical journal lives.
+pub(crate) use session_store::SessionStoreDir as CanonicalStoreDir;
 
 const WORKFLOW_LEARNING_ELIGIBILITY_HEADER: &str = "harn.workflow_learning.eligibility";
 const WORKFLOW_LEARNING_ELIGIBLE: &str = "eligible";
@@ -62,6 +64,7 @@ pub(crate) struct JournalState {
     /// append, then pops it, so two interleaved flushes (sibling tool calls in
     /// `parallel settle`) would each append the same head.
     flush_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    state_dir: session_store::SessionStoreDir,
     _writer_lease: SessionWriteLease,
 }
 
@@ -95,6 +98,10 @@ impl JournalState {
 
     pub(crate) fn store(&self) -> crate::stdlib::canonical_store::CanonicalStore {
         self.config.store.clone()
+    }
+
+    pub(crate) fn state_dir(&self) -> &session_store::SessionStoreDir {
+        &self.state_dir
     }
 
     pub(crate) fn first_event_id(&self) -> Option<u64> {
@@ -194,22 +201,39 @@ pub(crate) struct HydratedTranscript {
     pub messages: Vec<serde_json::Value>,
     pub source_event_ids: Vec<Option<String>>,
     pub summary: Option<String>,
+    pub goal: crate::agent_sessions::SessionGoalState,
+    pub goal_error: Option<String>,
 }
 
 impl HydratedTranscript {
     pub(crate) fn restore(&self, session_id: &str) -> Result<(), String> {
+        self.validate_goal()?;
         crate::agent_sessions::replace_messages_with_summary(
             session_id,
             &self.messages,
             self.summary.as_deref(),
         )?;
-        crate::agent_sessions::restore_message_event_ids(session_id, &self.source_event_ids)
+        crate::agent_sessions::restore_message_event_ids(session_id, &self.source_event_ids)?;
+        self.restore_goal(session_id)
+    }
+
+    pub(crate) fn validate_goal(&self) -> Result<(), String> {
+        if let Some(error) = &self.goal_error {
+            return Err(error.clone());
+        }
+        self.goal.validate()
+    }
+
+    pub(crate) fn restore_goal(&self, session_id: &str) -> Result<(), String> {
+        self.validate_goal()?;
+        crate::agent_sessions::restore_session_goal(session_id, self.goal.clone())
     }
 }
 
 pub(crate) struct PreparedJournal {
     pub transcript: HydratedTranscript,
     pub state: JournalState,
+    pub has_events: bool,
 }
 
 /// Open the canonical session once and prepare its per-agent-run journal.
@@ -243,6 +267,103 @@ pub(crate) async fn prepare(
         _ => SessionType::User,
     };
     let workflow_learning_eligibility = workflow_learning_eligibility(options)?;
+    let state = open_journal(
+        state_dir,
+        session_id,
+        parent_session_id,
+        session_type,
+        JournalConfigIdentity {
+            run_id,
+            turn_id,
+            workflow_learning_eligibility,
+        },
+        Some(InitializationAccounting::default()),
+    )
+    .await?;
+    let events = session_store::read_all_events(&state.config.store, session_id).await?;
+    let has_events = !events.is_empty();
+    Ok(PreparedJournal {
+        transcript: hydrate_events(events),
+        has_events,
+        state,
+    })
+}
+
+/// A journal for one control-plane mutation made outside any run, such as a
+/// reset. It claims the same writer slot a run would, so the mutation is
+/// durable in the session's owning store before the caller returns. Without a
+/// known store, it resolves one from the caller's run options (or store
+/// configuration when there are none) as a run would, and returns `None` when
+/// that store does not hold the session.
+pub(crate) async fn prepare_standalone(
+    session_id: &str,
+    known_store: Option<CanonicalStoreDir>,
+    options: Option<&DictMap>,
+    action: &str,
+) -> Result<Option<JournalState>, VmError> {
+    let state_dir = match known_store {
+        Some(dir) => dir,
+        None => match session_store::existing_canonical_session_dir(session_id, options).await? {
+            Some(dir) => dir,
+            None => return Ok(None),
+        },
+    };
+    let run_id = format!("{action}_{}", uuid::Uuid::now_v7());
+    open_journal(
+        state_dir,
+        session_id,
+        None,
+        SessionType::User,
+        JournalConfigIdentity {
+            turn_id: run_id.clone(),
+            run_id,
+            workflow_learning_eligibility: WORKFLOW_LEARNING_EXCLUDED.to_string(),
+        },
+        None,
+    )
+    .await
+    .map(Some)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Panics the next standalone write, so a test can abandon a reset mid-write.
+    pub(crate) static PANIC_IN_STANDALONE_WRITE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Append a standalone journal's queued mutations in one transaction.
+pub(crate) async fn persist_standalone(
+    session_id: &str,
+    journal: &JournalState,
+) -> Result<(), VmError> {
+    #[cfg(test)]
+    assert!(
+        !PANIC_IN_STANDALONE_WRITE.with(|armed| armed.replace(false)),
+        "forced panic in the standalone journal write"
+    );
+    let (store, events) = journal.pending_events()?;
+    store
+        .append_batch(session_id, events)
+        .await
+        .map_err(|error| VmError::Runtime(format!("agent transcript journal: {error}")))?;
+    Ok(())
+}
+
+struct JournalConfigIdentity {
+    run_id: String,
+    turn_id: String,
+    workflow_learning_eligibility: String,
+}
+
+async fn open_journal(
+    state_dir: session_store::SessionStoreDir,
+    session_id: &str,
+    parent_session_id: Option<String>,
+    session_type: SessionType,
+    identity: JournalConfigIdentity,
+    initialization_accounting: Option<InitializationAccounting>,
+) -> Result<JournalState, VmError> {
     // Claim the writer slot before opening or creating the session. Maintenance
     // owns the project lease exclusively, so acquiring in this order closes
     // the window where cleanup could delete a session during preparation.
@@ -255,27 +376,29 @@ pub(crate) async fn prepare(
         session_type,
     )
     .await?;
-    let events = session_store::read_all_events(&store, session_id).await?;
-    Ok(PreparedJournal {
-        transcript: hydrate_events(events),
-        state: JournalState {
-            config: JournalConfig {
-                store,
-                run_id,
-                turn_id,
-                workflow_learning_eligibility,
-            },
-            pending: JournalQueue::default(),
-            first_event_id: None,
-            execution_id: None,
-            task_id: None,
-            owns_session: false,
-            preparation: None,
-            initialization_accounting: Some(InitializationAccounting::default()),
-            lifecycle_reservation: None,
-            flush_lock: std::sync::Arc::default(),
-            _writer_lease: writer_lease,
+    let JournalConfigIdentity {
+        run_id,
+        turn_id,
+        workflow_learning_eligibility,
+    } = identity;
+    Ok(JournalState {
+        config: JournalConfig {
+            store,
+            run_id,
+            turn_id,
+            workflow_learning_eligibility,
         },
+        pending: JournalQueue::default(),
+        first_event_id: None,
+        execution_id: None,
+        task_id: None,
+        owns_session: false,
+        preparation: None,
+        initialization_accounting,
+        lifecycle_reservation: None,
+        flush_lock: std::sync::Arc::default(),
+        state_dir,
+        _writer_lease: writer_lease,
     })
 }
 
@@ -504,6 +627,8 @@ pub(crate) fn hydrate_events_with_publications(
 pub(crate) struct TranscriptHydration {
     messages: Vec<(Option<String>, serde_json::Value)>,
     summary: Option<String>,
+    goal: crate::agent_sessions::SessionGoalState,
+    goal_error: Option<String>,
     publications:
         std::collections::BTreeMap<String, crate::llm::assistant_publication::PublishedMessage>,
 }
@@ -514,10 +639,44 @@ impl TranscriptHydration {
             messages,
             summary,
             publications,
+            goal,
+            goal_error,
         } = self;
         let source_event_id = event.headers.get("source_event_id");
         match SessionEventPayload::decode(event) {
             Some(SessionEventPayload::Transcript(record)) => {
+                let metadata = record.transcript_event.metadata_json();
+                if metadata.get("schema").and_then(serde_json::Value::as_str)
+                    == Some("harn.session_goal.v1")
+                {
+                    let restored =
+                        serde_json::from_value::<crate::agent_sessions::SessionGoalState>(
+                            metadata
+                                .get("state")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        )
+                        .map_err(|error| error.to_string())
+                        .and_then(|mut state| {
+                            state.validate()?;
+                            let owner = metadata
+                                .get("session_id")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| {
+                                    "session goal event lacks its owning session".to_string()
+                                })?;
+                            if owner != event.session_id {
+                                state.turn = crate::agent_sessions::SessionGoalTurn::Idle;
+                            }
+                            Ok(state)
+                        });
+                    match restored {
+                        Ok(state) => *goal = state,
+                        Err(error) => {
+                            *goal_error = Some(format!("cannot restore session goal: {error}"));
+                        }
+                    }
+                }
                 if matches!(
                     event.kind,
                     SessionEventKind::Message
@@ -583,6 +742,8 @@ impl TranscriptHydration {
             messages,
             summary,
             publications,
+            goal,
+            goal_error,
         } = self;
         let (mut source_event_ids, mut messages): (Vec<_>, Vec<_>) = messages.into_iter().unzip();
         if let Some(summary_text) = summary.as_deref() {
@@ -604,6 +765,8 @@ impl TranscriptHydration {
                 messages,
                 source_event_ids,
                 summary,
+                goal,
+                goal_error,
             },
             publications,
         )

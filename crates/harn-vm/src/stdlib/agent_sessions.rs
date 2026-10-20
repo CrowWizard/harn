@@ -17,6 +17,8 @@ mod close_status;
 use close_status::close_status_arg;
 pub(crate) mod compact_config;
 use compact_config::build_compact_config;
+#[path = "agent_sessions/goal.rs"]
+pub(super) mod goal;
 
 /// Sessions raise catchable errors (callers may `try`/`recover`).
 const ERR_KIND: ErrorKind = ErrorKind::Thrown;
@@ -24,6 +26,7 @@ use crate::vm::Vm;
 
 pub fn register_agent_session_builtins(vm: &mut Vm) {
     crate::stdlib::macros::register_module_builtins(vm, module_path!());
+    goal::register(vm);
 }
 
 fn err(msg: impl Into<String>) -> VmError {
@@ -841,12 +844,19 @@ fn agent_session_claim_tool_format_builtin(
     exposure = "runtime_internal",
     effects = [],
     sig = "agent_session_reset(id: string) -> nil",
+    kind = "async",
     category = "agent.session",
-    doc = "Reset an agent session transcript."
+    doc = "Reset an agent session transcript and goal. Outside a run it is written to the session's known or configured canonical store before memory changes."
 )]
-fn agent_session_reset_builtin(args: &[VmValue], _out: &mut String) -> Result<VmValue, VmError> {
-    let id = arg_string_required(args, 0, "agent_session_reset", "id")?;
-    if !agent_sessions::reset_transcript(&id) {
+async fn agent_session_reset_builtin(
+    _ctx: crate::vm::AsyncBuiltinCtx,
+    args: Vec<VmValue>,
+) -> Result<VmValue, VmError> {
+    let id = arg_string_required(&args, 0, "agent_session_reset", "id")?;
+    let reset = agent_sessions::reset_session(&id, None)
+        .await
+        .map_err(|error| err(format!("agent_session_reset: {error}")))?;
+    if !reset {
         return Err(err(format!(
             "agent_session_reset: unknown session id '{id}'"
         )));
@@ -1518,7 +1528,10 @@ async fn agent_session_reanchor_builtin(
                 "agent_session_reanchor: failed to fork session '{id}' for carry_transcript=false"
             ))
             })?;
-        if !agent_sessions::reset_transcript(&dst) {
+        let reset = agent_sessions::reset_session(&dst, None)
+            .await
+            .map_err(|error| err(format!("agent_session_reanchor: {error}")))?;
+        if !reset {
             return Err(err(format!(
                 "agent_session_reanchor: failed to reset forked transcript '{dst}'"
             )));
@@ -1751,24 +1764,6 @@ async fn push_cancellation_reminder(
         }
     });
     let _ = bridge.push_queued_session_remind_from_params(&params).await;
-}
-
-fn compact_usize_opt(
-    opts: &crate::value::DictMap,
-    key: &'static str,
-) -> Result<Option<usize>, VmError> {
-    let Some(value) = opts.get(key) else {
-        return Ok(None);
-    };
-    let Some(raw) = value.as_int() else {
-        return Err(err(format!(
-            "agent_session_compact: `{key}` must be an int"
-        )));
-    };
-    if raw < 0 {
-        return Err(err(format!("agent_session_compact: `{key}` must be >= 0")));
-    }
-    Ok(Some(raw as usize))
 }
 
 #[cfg(test)]
