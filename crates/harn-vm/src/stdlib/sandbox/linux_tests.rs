@@ -437,6 +437,78 @@ fn process_network_ceiling_controls_real_child_socket() {
         .expect("the listener must observe the allowed child connection");
 }
 
+#[test]
+fn sandboxed_child_may_reassert_its_own_identity() {
+    // glibc's posix_spawn child, which GNU make uses for every recipe, calls
+    // setresuid(-1, euid, -1) first. A sandbox that refuses the setter fails
+    // each recipe with EPERM. The script asks for exactly that call, then for
+    // a call that changes the id, which must stay refused.
+    let Some(python) = ["/usr/bin/python3", "/bin/python3"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+    else {
+        eprintln!("skipped: python3 is not installed");
+        return;
+    };
+    // Without Landlock the backend delegates to Bubblewrap and never returns
+    // `Direct`; the filter both paths compile is covered structurally below.
+    if !landlock_available() {
+        eprintln!("skipped: this host has no usable Landlock");
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let script = "import os,sys\n\
+        os.setresuid(-1, os.geteuid(), -1)\n\
+        os.setresgid(-1, os.getegid(), -1)\n\
+        os.setuid(os.geteuid())\n\
+        try:\n\
+        \tos.setresuid(-1, os.geteuid() + 1, -1)\n\
+        except PermissionError:\n\
+        \tsys.exit(0)\n\
+        sys.exit(3)\n";
+    let args = vec!["-c".to_string(), script.to_string()];
+
+    let mut policy = linux_policy_with_workspace_ops(&["read_text"]);
+    policy.workspace_roots = vec![workspace.path().display().to_string()];
+    policy.side_effect_level = Some("process_exec".to_string());
+    let mut command = Command::new(python);
+    command.args(&args).current_dir(workspace.path());
+    let preparation = Backend::prepare_std_command(
+        python,
+        &args,
+        &mut command,
+        &policy,
+        SandboxProfile::Worktree,
+    )
+    .expect("prepare sandboxed child");
+    assert!(matches!(preparation, PrepareOutcome::Direct));
+    let output = command.output().expect("run sandboxed child");
+    assert!(
+        output.status.success(),
+        "own-id setters must pass and a changed id must not: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn identity_setters_never_move_a_slot_to_another_held_id() {
+    // real, effective and saved all differ, as for a daemon that dropped
+    // privilege: setresuid(-1, saved, -1) would regain the saved identity.
+    let unchanged = u64::from(u32::MAX);
+    let positions = vec![
+        vec![unchanged, 1000],
+        vec![unchanged, 1001],
+        vec![unchanged, 0],
+    ];
+    let admitted = super::admitted_combinations(&positions);
+    assert!(admitted.contains(&vec![unchanged, 1001, unchanged]));
+    assert!(admitted.contains(&vec![1000, 1001, 0]));
+    assert!(!admitted.contains(&vec![unchanged, 0, unchanged]));
+    assert!(!admitted.contains(&vec![unchanged, 1000, unchanged]));
+    assert!(!admitted.contains(&vec![0, unchanged, unchanged]));
+    assert_eq!(admitted.len(), 8);
+}
+
 /// A policy whose only grant is serve-only local IPC under `root`.
 fn local_ipc_policy(root: &std::path::Path) -> CapabilityPolicy {
     let mut policy = linux_policy_with_workspace_ops(&["read_text", "write_text"]);
