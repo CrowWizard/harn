@@ -1491,3 +1491,5 @@ mod sessions;
 mod staged_writes;
 mod stop_controls;
 mod tool_call_cancellation;
+#[cfg(feature = "hostlib")]
+mod workspace_checkpoint;

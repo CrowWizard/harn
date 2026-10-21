@@ -18,12 +18,22 @@ detail}` from every method, never an empty success.
 | `harness.fs.checkpoint_call_begin(request)` | Stat the tree before a tool or shell call. Request: `{session_id, call_id}`. |
 | `harness.fs.checkpoint_call_end(request)` | Stat again and attribute each changed path, with its post-call hash, to the call. Request: `{session_id, call_id, side_effect?}`. |
 | `harness.fs.checkpoint_plan(request)` | The restore plan to a boundary, without touching files. Request: `{session_id, boundary_id}`. |
-| `harness.fs.checkpoint_restore(request)` | Execute the plan and return the receipt. Request: `{session_id, boundary_id, paths?}`. |
+| `harness.fs.checkpoint_restore(request)` | Execute the plan and return the receipt. Request: `{session_id, boundary_id, paths?}`; `paths` must be non-empty when present, and omitting it restores every attributed path. |
 | `harness.fs.checkpoint_drop(request)` | Release the session's checkpoint state and stored files. |
 
 A host calls `checkpoint_capture` once per user message, brackets every tool
 and shell call with `checkpoint_call_begin` and `checkpoint_call_end`, and
 passes the tool annotation's side-effect class as `side_effect`.
+
+## ACP
+
+`session/workspace_checkpoint` carries the same actions for ACP clients. Params:
+`{sessionId, action, boundaryId?, callId?, sideEffect?, paths?}` where `action`
+is `capture`, `call_begin`, `call_end`, `plan`, `restore`, or `drop`. The root is
+the session's cwd, and the result is the same typed object the `harness.fs`
+method returns. `session/close` drops the session's checkpoint state. The
+server does not bracket tool calls itself: the host that owns the turn calls
+`capture` at each user message and `call_begin` / `call_end` around each call.
 
 ## What a boundary stores
 
