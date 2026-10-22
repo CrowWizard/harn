@@ -121,7 +121,8 @@ async fn prompt_with_identity(
 ///   * The refuse half alone would pass if everything were rejected.
 ///
 /// Disarm by deleting `runtime_control_plane` from `harness.agent.open` in
-/// `crates/harn-capability-contracts/src/ai.rs`: the admit half then fails
+/// `crates/harn-capability-contracts/src/ai.rs` (or from the run-store methods
+/// in `host.rs`): the admit half then fails
 /// with the ceiling rejection quoted in the module docs, while the refuse half
 /// keeps passing.
 #[tokio::test(flavor = "current_thread")]
@@ -150,7 +151,17 @@ pipeline default(harness: Harness) {
       len(harness.llm.mock_calls()) == 1,
       "the default served task must consume exactly one model call",
     )
+    harness.runtime.store_set("served.bookkeeping", 7)
+    assert(
+      harness.runtime.store_get("served.bookkeeping") == 7,
+      "the run store must hold a pipeline's own bookkeeping",
+    )
+    harness.runtime.store_delete("served.bookkeeping")
     harness.stdio.println("control-plane-ok")
+  } else if prompt == "store-save" {
+    harness.runtime.store_set("../escape.txt", "must-stay-in-store")
+    harness.runtime.store_save()
+    harness.runtime.store_clear()
   } else {
     harness.fs.write_text("ceiling-probe.txt", "must-not-write")
   }
@@ -225,6 +236,20 @@ pipeline default(harness: Harness) {
             assert!(
                 !dir.path().join("ceiling-probe.txt").exists(),
                 "the rejected workspace write reached the filesystem"
+            );
+
+            // The run store persists to `<state-root>/store.json`, a path the
+            // runtime fixes. A `read_only` run may save and clear it, but a
+            // caller-chosen key must never turn that into a write elsewhere.
+            let saved = prompt(&request_tx, &mut response_rx, &session_id, 4, "store-save").await;
+            assert_eq!(
+                saved["result"]["stopReason"], "end_turn",
+                "run-store save and clear are state-root control-plane writes; got {saved}"
+            );
+            assert!(
+                !dir.path().join("escape.txt").exists()
+                    && !dir.path().parent().unwrap().join("escape.txt").exists(),
+                "a run-store key escaped the state root"
             );
 
             drop(request_tx);
