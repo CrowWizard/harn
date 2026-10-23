@@ -173,6 +173,14 @@ pub use crate::stdlib::sandbox::{
     decode_seccomp_hex, transferable_confinement, TransferableConfinement,
 };
 
+mod loopback;
+pub(crate) use loopback::reconcile;
+pub use loopback::{
+    loopback_support, withhold_unsupported_loopback, LoopbackSupport, LoopbackUnavailable,
+    LoopbackUnavailableReason, LOOPBACK_GRANT_FIELD, LOOPBACK_UNAVAILABLE_CATEGORY,
+    NETNS_LAUNCHER_FIELD,
+};
+
 /// Push a transient execution policy with `sandbox_profile` replaced by the
 /// requested profile. The returned guard restores the surrounding policy on
 /// drop.

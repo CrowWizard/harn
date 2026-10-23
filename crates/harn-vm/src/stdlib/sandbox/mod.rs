@@ -1217,7 +1217,7 @@ pub(crate) fn active_sandbox_policy() -> Option<(CapabilityPolicy, SandboxProfil
     if !profile.confines_processes() || effective_fallback(profile) == SandboxFallback::Off {
         return None;
     }
-    Some((policy, profile))
+    Some((crate::process_sandbox::reconcile(policy), profile))
 }
 
 fn spawn_error(error: std::io::Error) -> VmError {
