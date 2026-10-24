@@ -4409,6 +4409,7 @@ dependencies = [
  "hex",
  "imbl",
  "jsonschema",
+ "libc",
  "linkme",
  "parking_lot",
  "pin-project-lite",
