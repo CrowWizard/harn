@@ -1,6 +1,7 @@
 use super::*;
 use crate::value::VmDictExt;
 
+mod doas;
 mod find_delete;
 mod git_discard;
 mod git_push;
@@ -1045,6 +1046,8 @@ fn floor_blocks_quoting_and_chaining_adversarial_forms() {
         "git reset --hard && echo done",
         "echo start; git clean -fdx; echo end",
         "sudo rm -rf /etc",
+        "doas rm -rf /etc",
+        "doas -u root git reset --hard",
     ] {
         assert!(
             is_cat_root(cmd),
@@ -1101,6 +1104,7 @@ fn floor_blocks_in_root_project_wipes() {
         "echo ok & rm -rf ./*",
         "env FOO=bar rm -rf ${PWD}/*",
         "sudo -u root rm --recursive --force .",
+        "doas -n -u root rm --recursive --force .",
         "command -- rm -rf .",
         "command -p rm -rf .",
         "bash -lc 'rm -rf ./*'",
