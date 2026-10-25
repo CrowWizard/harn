@@ -80,10 +80,26 @@ struct StopOnHeartbeat {
     cancelled_at: Mutex<Option<Instant>>,
     /// When the loop reported the stopped call's terminal update.
     call_ended_at: Mutex<Option<Instant>>,
+    /// Every terminal output of the call, so a failure says what it returned.
+    call_outputs: Mutex<Vec<String>>,
 }
 
 impl AgentEventSink for StopOnHeartbeat {
     fn handle_event(&self, event: &AgentEvent) {
+        if let AgentEvent::ToolCallUpdate {
+            tool_call_id,
+            error,
+            raw_output: Some(raw_output),
+            ..
+        } = event
+        {
+            if tool_call_id == CALL {
+                self.call_outputs
+                    .lock()
+                    .unwrap()
+                    .push(format!("{raw_output:?} error={error:?}"));
+            }
+        }
         if let AgentEvent::ToolCallUpdate {
             tool_call_id,
             error: Some(_),
@@ -182,15 +198,19 @@ fn stopping_one_tool_call_stops_a_waiting_rename_without_writes() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
-    // The process sandbox lets a tool start programs from installed toolchain
-    // paths or the workspace, not from an unrelated temporary directory, so
-    // the stand-in server lives in a hidden directory inside the workspace.
+    // A hidden directory keeps the stand-in server out of the snapshot.
     let program = workspace.path().join(".fake-server/rust-analyzer");
     fs::create_dir_all(program.parent().unwrap()).unwrap();
     fs::write(&program, NEVER_QUIESCENT).unwrap();
     fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
     // SAFETY: set before any thread of this test binary reads the variable.
     unsafe { std::env::set_var("HARN_LSP_SERVER_RUST_ANALYZER", &program) };
+    // This test proves that a stop reaches the rename through the agent loop,
+    // not how OS confinement treats a language server. macOS Seatbelt stops
+    // the shell stand-in from starting inside a tool, which turns the wait
+    // into a fallback, so OS confinement is off for this binary.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("HARN_HANDLER_SANDBOX", "off") };
     // The agent loop confines tools to the working directory's workspace.
     std::env::set_current_dir(workspace.path()).unwrap();
     let before = snapshot(workspace.path());
@@ -232,6 +252,11 @@ fn stopping_one_tool_call_stops_a_waiting_rename_without_writes() {
         .lines()
         .filter_map(|line| line.strip_prefix("[harn] "))
         .collect();
+    eprintln!(
+        "lines {lines:?}\nphases {:?}\ncall outputs {:?}",
+        sink.phases.lock().unwrap(),
+        sink.call_outputs.lock().unwrap()
+    );
     let cancelled_at = sink
         .cancelled_at
         .lock()
