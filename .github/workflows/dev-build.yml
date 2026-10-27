@@ -21,8 +21,26 @@ jobs:
   build:
     name: Build Linux dev binary
     runs-on: ubuntu-24.04
+    # Build and smoke-test against the target libc, not the runner's glibc.
+    container:
+      image: quay.io/pypa/manylinux_2_34_x86_64@sha256:834a2a31de5eabacd4411417b3bbc9fcb6ff9f959972711ab3b73355e7b0928d
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      HARN_DEV_GLIBC_MAX: "2.34"
     steps:
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          dnf install -y git nodejs python3 perl-core openssl-devel
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc $HARN_DEV_GLIBC_MAX"
+
       - name: Check out dev
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,12 +62,17 @@ jobs:
         uses: ./.github/actions/rust-cache
         continue-on-error: true
         with:
-          shared-key: dev-build
+          shared-key: dev-build-manylinux-glibc234-v1
           cache-workspace-crates: "true"
           cache-bin: false
 
       - name: Build release binary
         run: cargo build --locked --release --bin harn --features harn-cli/embedded-stdlib
+
+      - name: Enforce glibc 2.34 compatibility
+        run: |
+          scripts/check_linux_glibc_floor.sh target/release/harn "$HARN_DEV_GLIBC_MAX"
+          ./target/release/harn --version
 
       - name: Write build metadata
         run: |
@@ -57,6 +80,7 @@ jobs:
           cat > target/release/dev-build-metadata.txt <<EOF
           branch=${GITHUB_REF_NAME}
           commit=${GITHUB_SHA}
+          glibc_max=${HARN_DEV_GLIBC_MAX}
           version=$(./target/release/harn --version)
           EOF
 

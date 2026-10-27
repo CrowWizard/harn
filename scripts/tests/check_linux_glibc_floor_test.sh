@@ -12,6 +12,14 @@ cat "$HARN_TEST_READELF_OUTPUT"
 EOF
 chmod +x "$tmp_dir/readelf"
 
+cat >"$tmp_dir/dev-compatible.txt" <<'EOF'
+  0x0010: Name: GLIBC_2.17  Flags: none  Version: 10
+  0x0020: Name: GLIBC_2.34  Flags: none  Version: 9
+EOF
+HARN_READELF_BIN="$tmp_dir/readelf" \
+  HARN_TEST_READELF_OUTPUT="$tmp_dir/dev-compatible.txt" \
+  "$repo_root/scripts/check_linux_glibc_floor.sh" "$tmp_dir/harn" 2.34
+
 cat >"$tmp_dir/compatible.txt" <<'EOF'
   0x0010: Name: GLIBC_2.17  Flags: none  Version: 10
   0x0020: Name: GLIBC_2.34  Flags: none  Version: 9
@@ -20,6 +28,13 @@ EOF
 HARN_READELF_BIN="$tmp_dir/readelf" \
   HARN_TEST_READELF_OUTPUT="$tmp_dir/compatible.txt" \
   "$repo_root/scripts/check_linux_glibc_floor.sh" "$tmp_dir/harn" 2.35
+
+if HARN_READELF_BIN="$tmp_dir/readelf" \
+  HARN_TEST_READELF_OUTPUT="$tmp_dir/compatible.txt" \
+  "$repo_root/scripts/check_linux_glibc_floor.sh" "$tmp_dir/harn" 2.34; then
+  echo "expected GLIBC_2.35 requirements to fail the dev GLIBC_2.34 policy" >&2
+  exit 1
+fi
 
 cat >"$tmp_dir/too-new.txt" <<'EOF'
   0x0010: Name: GLIBC_2.39  Flags: none  Parent: GLIBC_2.17
