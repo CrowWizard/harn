@@ -29,7 +29,7 @@ jobs:
       run:
         shell: bash
     env:
-      HARN_DEV_GLIBC_MAX: "2.34"
+      HARN_EXT_DEV_GLIBC_MAX: "2.34"
     steps:
       - name: Install build prerequisites
         run: |
@@ -39,7 +39,7 @@ jobs:
             https://sh.rustup.rs -o /tmp/rustup-init.sh
           sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none --no-modify-path
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          test "$(getconf GNU_LIBC_VERSION)" = "glibc $HARN_DEV_GLIBC_MAX"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc $HARN_EXT_DEV_GLIBC_MAX"
 
       - name: Check out dev
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,7 +71,7 @@ jobs:
 
       - name: Enforce glibc 2.34 compatibility
         run: |
-          scripts/check_linux_glibc_floor.sh target/release/harn "$HARN_DEV_GLIBC_MAX"
+          scripts/check_linux_glibc_floor.sh target/release/harn "$HARN_EXT_DEV_GLIBC_MAX"
           ./target/release/harn --version
 
       - name: Write build metadata
@@ -80,7 +80,7 @@ jobs:
           cat > target/release/dev-build-metadata.txt <<EOF
           branch=${GITHUB_REF_NAME}
           commit=${GITHUB_SHA}
-          glibc_max=${HARN_DEV_GLIBC_MAX}
+          glibc_max=${HARN_EXT_DEV_GLIBC_MAX}
           version=$(./target/release/harn --version)
           EOF
 
