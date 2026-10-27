@@ -75,8 +75,8 @@ impl AcpServer {
     }
 
     /// Parse and launch the `environmentPolicy` block at a runnable session
-    /// admission boundary. Omission is refused. Env-source grants are snapshotted from
-    /// the server environment here, at the launch boundary.
+    /// admission boundary. Omission defaults to `inherited`. Env-source grants are
+    /// snapshotted from the server environment here, at the launch boundary.
     ///
     /// Omission once selected `inherited`, which returns the launcher snapshot
     /// whole and skips [`ENV_ALLOWLIST`] entirely. That is the wrong default
@@ -87,30 +87,20 @@ impl AcpServer {
     /// does not stop a child from reading its own environment and writing a
     /// value into the workspace or a transcript.
     ///
-    /// Moving that default to the allowlist fixed the exposure and created a
-    /// second problem, which is why omission is now refused rather than
-    /// defaulted either way. A client that said nothing got `inherited` one
-    /// day and `isolated` the next, with no signal at either end: the session
-    /// opened, the run completed, and the only trace was work that quietly
-    /// stopped happening. That cost a release (harn#8566). No default can fix
-    /// it, because the hazard is not which default is chosen; it is that the
-    /// meaning of silence belongs to this side of the wire and can move under
-    /// a client that never wrote it down.
-    ///
-    /// So the launcher's environment is a decision the client states. All
-    /// three kinds stay reachable and none of them is what happens when a
-    /// client says nothing.
+    /// `inherited` is deliberately the compatibility default for clients that
+    /// omit the extension field. Clients that need a narrower environment can
+    /// still state `isolated` or `granted` explicitly.
     ///
     /// [`ENV_ALLOWLIST`]: harn_vm::security::ENV_ALLOWLIST
     pub(super) fn resolve_session_environment(
         params: &serde_json::Value,
         launcher_environment: &harn_vm::security::LauncherEnvironment,
     ) -> Result<harn_vm::security::SessionEnvironment, (String, serde_json::Value)> {
-        let Some(raw) = params.get("environmentPolicy") else {
-            return Err(Self::missing_environment_policy());
-        };
-        let config: AcpSessionEnvironmentConfig =
-            serde_json::from_value(raw.clone()).map_err(|error| {
+        let config = params
+            .get("environmentPolicy")
+            .map(|raw| serde_json::from_value(raw.clone()))
+            .transpose()
+            .map_err(|error| {
                 let message =
                     format!("[environment_policy.invalid] invalid environment policy: {error}");
                 (
@@ -120,48 +110,15 @@ impl AcpServer {
                         "message": message,
                     }),
                 )
-            })?;
+            })?
+            .unwrap_or_else(|| AcpSessionEnvironmentConfig {
+                kind: harn_vm::security::EnvironmentPolicyKind::Inherited,
+                grants: Vec::new(),
+            });
         let environment = launcher_environment
             .launch(config.kind, config.grants)
             .map_err(|error| (error.to_string(), error.to_json()))?;
         Ok(environment)
-    }
-
-    /// The refusal for a runnable session admission with no environment policy.
-    ///
-    /// It names the field and every accepted value, because the client that
-    /// hits this is by definition one that never thought about the field, and
-    /// a refusal that only says "missing" sends them to the source to find out
-    /// what to put there. The accepted values come from
-    /// [`EnvironmentPolicyKind`] rather than a literal list, so a fourth kind
-    /// cannot be added without this message learning about it.
-    ///
-    /// [`EnvironmentPolicyKind`]: harn_vm::security::EnvironmentPolicyKind
-    fn missing_environment_policy() -> (String, serde_json::Value) {
-        use harn_vm::security::EnvironmentPolicyKind;
-
-        let accepted = [
-            EnvironmentPolicyKind::Inherited,
-            EnvironmentPolicyKind::Isolated,
-            EnvironmentPolicyKind::Granted,
-        ];
-        let names: Vec<&'static str> = accepted.iter().map(|kind| kind.as_str()).collect();
-        let message = format!(
-            "[environment_policy.missing] runnable session admission requires `environmentPolicy`: \
-             state `kind` as one of {}. Omission is refused rather than defaulted, \
-             so that what a session's children can read never depends on this \
-             server's default.",
-            names.join(", ")
-        );
-        (
-            message.clone(),
-            serde_json::json!({
-                "code": "environment_policy.missing",
-                "message": message,
-                "field": "environmentPolicy",
-                "accepted": names,
-            }),
-        )
     }
 
     pub(super) fn ensure_workspace_anchor(
@@ -915,43 +872,15 @@ mod environment_policy_default_tests {
         .kind()
     }
 
-    /// Omission resolves to nothing at all.
-    ///
-    /// This assertion replaces one that pinned the filtered default, and the
-    /// reason it changed is the point. Saying nothing first meant the
-    /// operator's whole shell, credentials included, in every child running a
-    /// model-authored tool call; then it meant the allowlist. Both were
-    /// defensible and the movement between them is what broke a release
-    /// (harn#8566), because no client could see it happen. A kind that
-    /// omission resolves to is a kind this side can change under a client
-    /// that never wrote one down, so omission resolves to a refusal.
     #[test]
-    fn omitting_the_policy_resolves_to_no_kind_at_all() {
-        let (message, data) = AcpServer::resolve_session_environment(
-            &serde_json::json!({"cwd": "/tmp"}),
-            &harn_vm::security::LauncherEnvironment::capture(),
-        )
-        .expect_err("an omitted policy must not resolve to any kind");
+    fn omitting_the_policy_defaults_to_inherited() {
         assert_eq!(
-            data["code"],
-            serde_json::json!("environment_policy.missing")
-        );
-        assert_eq!(data["field"], serde_json::json!("environmentPolicy"));
-        for kind in [
+            kind_for(serde_json::json!({"cwd": "/tmp"})),
             EnvironmentPolicyKind::Inherited,
-            EnvironmentPolicyKind::Isolated,
-            EnvironmentPolicyKind::Granted,
-        ] {
-            assert!(
-                message.contains(kind.as_str()),
-                "the refusal must name {}: {message}",
-                kind.as_str()
-            );
-        }
+        );
     }
 
-    /// Inheriting the operator's environment stays possible. It just has to
-    /// be asked for, which is the whole change.
+    /// Inheriting the operator's environment remains available explicitly.
     #[test]
     fn inheriting_remains_available_as_an_explicit_choice() {
         assert_eq!(

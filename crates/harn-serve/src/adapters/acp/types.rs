@@ -441,9 +441,9 @@ pub struct AcpJsonRpcErrorResponse {
     pub error: AcpJsonRpcError,
 }
 
-/// The environment policy a client declares on `session/new` or a cold
-/// `session/load`. Both require a declaration. A live load retains its established
-/// policy and refuses a different declaration. Harn resolves it once into a
+/// The optional environment policy a client may declare on `session/new` or
+/// `session/load`. Omission defaults to `inherited`. A live load retains its
+/// established policy and refuses a different declaration. Harn resolves it once into a
 /// [`harn_vm::security::SessionEnvironment`].
 ///
 /// The launcher parses its own `--grant name=spec` strings at ITS boundary and
@@ -461,8 +461,8 @@ pub struct AcpSessionEnvironmentConfig {
 pub struct AcpSessionNewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// The session's environment policy. Required: `session/new` refuses a
-    /// request that omits it (harn#8566). See [`AcpSessionEnvironmentConfig`].
+    /// The session's environment policy. Omission defaults to `inherited`.
+    /// See [`AcpSessionEnvironmentConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "environmentPolicy")]
     pub environment_policy: Option<AcpSessionEnvironmentConfig>,
@@ -473,10 +473,8 @@ pub struct AcpSessionNewParams {
 impl AcpSessionNewParams {
     /// Build a `session/new` request.
     ///
-    /// The policy is a parameter rather than a field left for the caller to
-    /// remember, because the field is optional on the wire and a request that
-    /// omits it is refused (harn#8566). Requiring it here means a caller
-    /// cannot express the refused shape and find out at runtime.
+    /// The policy is accepted as an explicit parameter when callers need a
+    /// policy other than the wire-level `inherited` default.
     pub fn new(cwd: impl Into<String>, environment_policy: AcpSessionEnvironmentConfig) -> Self {
         Self {
             cwd: Some(cwd.into()),
@@ -521,15 +519,19 @@ pub struct AcpSessionRestoreResult {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-/// `session/load` params with the launcher's explicit environment declaration.
+/// `session/load` params with the launcher's optional environment declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpSessionLoadParams {
     #[serde(rename = "sessionId")]
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(rename = "environmentPolicy")]
-    pub environment_policy: AcpSessionEnvironmentConfig,
+    #[serde(
+        rename = "environmentPolicy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub environment_policy: Option<AcpSessionEnvironmentConfig>,
 }
 
 impl AcpSessionLoadParams {
@@ -540,7 +542,7 @@ impl AcpSessionLoadParams {
         Self {
             session_id: session_id.into(),
             cwd: None,
-            environment_policy,
+            environment_policy: Some(environment_policy),
         }
     }
 
@@ -907,7 +909,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_load_request_requires_the_typed_launch_declaration() {
+    fn session_load_request_accepts_an_optional_launch_declaration() {
         let params = AcpSessionLoadParams::new(
             "saved-session",
             AcpSessionEnvironmentConfig {
@@ -924,7 +926,9 @@ mod tests {
         assert_eq!(request["params"]["cwd"], "/workspace");
         let mut missing = request["params"].clone();
         missing.as_object_mut().unwrap().remove("environmentPolicy");
-        assert!(serde_json::from_value::<AcpSessionLoadParams>(missing).is_err());
+        let params = serde_json::from_value::<AcpSessionLoadParams>(missing)
+            .expect("omitted policy uses the server default");
+        assert!(params.environment_policy.is_none());
     }
 
     #[test]

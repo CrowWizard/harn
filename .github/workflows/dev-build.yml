@@ -1,0 +1,71 @@
+name: Build dev binary
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build:
+    name: Build Linux dev binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install sccache
+        uses: ./.github/actions/sccache-install
+        continue-on-error: true
+
+      - name: Configure Cargo cache wrapper
+        if: env.SCCACHE_PATH != ''
+        run: echo "RUSTC_WRAPPER=${SCCACHE_PATH}" >> "$GITHUB_ENV"
+
+      - name: Restore Rust cache
+        uses: ./.github/actions/rust-cache
+        continue-on-error: true
+        with:
+          shared-key: dev-build
+          cache-workspace-crates: "true"
+          cache-bin: false
+
+      - name: Build release binary
+        run: cargo build --locked --release --bin harn --features harn-cli/embedded-stdlib
+
+      - name: Write build metadata
+        run: |
+          set -euo pipefail
+          cat > target/release/dev-build-metadata.txt <<EOF
+          branch=${GITHUB_REF_NAME}
+          commit=${GITHUB_SHA}
+          version=$(./target/release/harn --version)
+          EOF
+
+      - name: Upload dev artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: harn-dev-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            target/release/harn
+            target/release/dev-build-metadata.txt
