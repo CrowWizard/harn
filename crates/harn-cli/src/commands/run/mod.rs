@@ -14,6 +14,7 @@ use crate::skill_loader::{
 };
 use harn_parser::DiagnosticSeverity;
 
+mod builtin_policy;
 mod chunk_loading;
 pub(crate) mod environment;
 mod eval_source;
@@ -38,6 +39,7 @@ use outcome::{
 };
 pub(crate) mod sandbox;
 
+pub(crate) use self::builtin_policy::build_denied_builtins;
 pub(crate) use self::chunk_loading::{
     compile_or_load_chunk_for_run, compile_or_load_chunk_with_timing, LoadedChunk,
 };
@@ -82,67 +84,6 @@ use self::sandbox::{
     default_run_workspace_root, install_run_sandbox_scope, run_sandbox_attestation,
 };
 pub(crate) use self::watch::run_watch;
-
-/// Core builtins that are never denied, even when using `--allow`.
-const CORE_BUILTINS: &[&str] = &[
-    "println",
-    "print",
-    "log",
-    "type_of",
-    "to_string",
-    "to_int",
-    "to_float",
-    "len",
-    "assert",
-    "assert_eq",
-    "assert_ne",
-    "json_parse",
-    "json_stringify",
-    "runtime_context",
-    "task_current",
-    "runtime_context_values",
-    "runtime_context_get",
-    "runtime_context_set",
-    "runtime_context_clear",
-];
-
-/// Build the set of denied builtin names from `--deny` or `--allow` flags.
-///
-/// - `--deny a,b,c` denies exactly those names.
-/// - `--allow a,b,c` denies everything *except* the listed names and the core builtins.
-pub(crate) fn build_denied_builtins(
-    deny_csv: Option<&str>,
-    allow_csv: Option<&str>,
-) -> HashSet<String> {
-    if let Some(csv) = deny_csv {
-        csv.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else if let Some(csv) = allow_csv {
-        // With --allow, we mark every registered stdlib builtin as denied
-        // *except* those in the allow list and the core builtins.
-        let allowed: HashSet<String> = csv
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let core: HashSet<&str> = CORE_BUILTINS.iter().copied().collect();
-
-        // Create a temporary VM with stdlib registered to enumerate all builtin names.
-        let mut tmp = harn_vm::new_vm();
-        harn_runtime::register_vm_stdlib(&mut tmp);
-        harn_vm::register_store_builtins(&mut tmp, std::path::Path::new("."));
-        harn_vm::register_metadata_builtins(&mut tmp, std::path::Path::new("."));
-
-        tmp.builtin_names()
-            .into_iter()
-            .filter(|name| !allowed.contains(name) && !core.contains(name.as_str()))
-            .collect()
-    } else {
-        HashSet::new()
-    }
-}
 
 /// Whether a run inherits configuration discovered from the entry file's
 /// surrounding project. This is deliberately a mode rather than a collection
