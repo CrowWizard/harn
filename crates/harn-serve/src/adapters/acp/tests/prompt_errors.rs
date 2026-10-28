@@ -146,10 +146,55 @@ async fn compile_error_clears_active_prompt_and_has_typed_data() {
     .await;
     assert_prompt_error_data(&response, -32000, "generic_throw");
 
-    // A steer arriving now must start a turn, not join the failed one.
     let session = &server.sessions[&session_id];
     assert!(!session.concurrent_control.prompt_is_active());
     assert!(session.host_bridge.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inline_natural_language_reaches_the_agent_loop() {
+    harn_clock::test_support::with_local_tasks(async {
+        let mock = harn_vm::llm::parse_llm_mock_value(&serde_json::json!({
+            "text": "I found the requested directory.",
+            "model": "inline-prompt-proof",
+            "provider": "mock",
+        }))
+        .expect("mock fixture");
+        harn_vm::llm::install_cli_llm_mocks(vec![mock]);
+        harn_vm::llm::enable_cli_llm_mock_recording();
+        struct MockModeGuard;
+        impl Drop for MockModeGuard {
+            fn drop(&mut self) {
+                harn_vm::llm::clear_cli_llm_mock_mode();
+            }
+        }
+        let _mock_mode = MockModeGuard;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut server =
+            AcpServer::new_with_output(AcpServerConfig::new(None), AcpOutput::Channel(tx));
+        let session_id = new_session(&mut server, &mut rx).await;
+
+        let response = prompt_response(
+            &mut server,
+            &mut rx,
+            2,
+            serde_json::json!({
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "Can you inspect ../videoskills and summarize its directories?"}],
+            }),
+        )
+        .await;
+        assert!(response["error"].is_null(), "{response:#}");
+        assert_eq!(response["result"]["stopReason"], "end_turn");
+        let calls = harn_vm::llm::take_cli_llm_recordings();
+        assert_eq!(calls.len(), 1, "natural language must reach the model boundary");
+        let transcript = harn_vm::agent_sessions::transcript(&session_id).expect("transcript");
+        let transcript = harn_vm::llm::vm_value_to_json(&transcript);
+        assert_eq!(
+            transcript["messages"][0]["content"],
+            "Can you inspect ../videoskills and summarize its directories?"
+        );
+    }).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

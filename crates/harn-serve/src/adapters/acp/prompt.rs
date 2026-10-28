@@ -287,9 +287,15 @@ impl AcpServer {
                 );
                 return;
             }
-            // Wrap inline prompt source in a pipeline so the compiler has
-            // an entry point.
-            let wrapped = format!("pipeline main(harness: Harness) {{\n{prompt_text}\n}}");
+            // ACP prompts are natural language, not inline Harn source. Route
+            // them through the same tool-aware loop used by served pipelines.
+            let wrapped = String::from(
+                "import { agent_loop } from \"std/agent/loop\"\n\
+                 \n\
+                 pipeline main(harness: Harness) {\n\
+                   agent_loop(harness, prompt, nil, {})\n\
+                 }",
+            );
             (wrapped, None)
         };
 
