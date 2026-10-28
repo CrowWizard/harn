@@ -63,6 +63,13 @@ pub struct SqliteSessionStore {
     inner: Arc<StoreInner>,
 }
 
+/// The small, indexed part of a session needed to decide if it has a journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionJournalPresence {
+    pub tenant_id: Option<String>,
+    pub has_events: bool,
+}
+
 // Clones are claims on one open store, not copies of its configuration.
 // Keep the connection, hooks, admission and snapshot lifetime together so
 // adding store policy does not enlarge every async caller's stack frame.
@@ -109,6 +116,30 @@ impl DerefMut for MutationConnection<'_> {
 impl SqliteSessionStore {
     /// Current schema version supported by the session store initializer.
     pub const SCHEMA_VERSION: i64 = 6;
+
+    /// Inspect a session without reading its events or its potentially large metadata.
+    pub fn journal_presence(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<SessionJournalPresence>> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT tenant_id, event_count FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| {
+                let count: i64 = row.get(1)?;
+                if count < 0 {
+                    return Err(rusqlite::Error::IntegralValueOutOfRange(1, count));
+                }
+                Ok(SessionJournalPresence {
+                    tenant_id: row.get(0)?,
+                    has_events: count > 0,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_sql)
+    }
 
     pub fn open(path: impl AsRef<Path>) -> StoreResult<Self> {
         Self::open_with_hooks(path, StoreHooks::default())
@@ -473,6 +504,15 @@ pub(crate) fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     let mut sidecar = path.as_os_str().to_os_string();
     sidecar.push(suffix);
     PathBuf::from(sidecar)
+}
+
+/// Database and coordination paths owned by a live session store.
+pub fn session_store_runtime_paths(database: &Path) -> Vec<PathBuf> {
+    let mut paths = harn_sqlite::database_runtime_paths(database);
+    if let Some(directory) = database.parent() {
+        paths.push(crate::session_lease_directory(directory));
+    }
+    paths
 }
 
 fn initialize_session_schema(transaction: &Transaction<'_>) -> StoreResult<()> {

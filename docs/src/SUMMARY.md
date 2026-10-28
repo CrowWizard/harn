@@ -149,6 +149,7 @@
   - [Provider support recommendations](./provider-support.md)
   - [Provider catalog refresh workflow](./llm/provider-catalog-refresh.md)
   - [Update model facts from Models.dev](./llm/models-dev-source.md)
+  - [Register a model](./llm/register-model.md)
   - [Coding agent provider benchmark](./llm/coding-agent-benchmark.md)
 - [Layered runtime configuration](./configuration.md)
 - [Long-running tools](./long-running-tools.md)
@@ -311,6 +312,7 @@
 ## CLI and tooling
 
 - [CLI reference](./cli-reference.md)
+- [Recover a blocked spend scope](./spend-recovery.md)
 - [Signals reference](./signals-reference.md)
 - [Benchmark the portable kernel](./portable-kernel-benchmarking.md)
 - [Linked-program reachability](./dev/linked-program-reachability.md)

@@ -51,7 +51,8 @@ pub struct RunSandboxOptions {
     ///
     /// `pub(crate)`: the config is launcher-internal and parsed from
     /// CLI flags, not part of the in-process `execute_run` API surface.
-    pub(crate) environment: EnvironmentPolicyConfig,
+    /// Keep launcher policy growth out of the nested command futures.
+    pub(crate) environment: Box<EnvironmentPolicyConfig>,
 }
 
 impl Default for RunSandboxOptions {
@@ -69,7 +70,7 @@ impl Default for RunSandboxOptions {
             allow_process_loopback: false,
             allow_process_self_introspection: false,
             netns_launcher_path: None,
-            environment: EnvironmentPolicyConfig::default(),
+            environment: Box::default(),
         }
     }
 }
@@ -119,7 +120,7 @@ impl RunSandboxOptions {
 
     /// Attach the session environment policy to this run.
     pub(crate) fn with_environment_policy(mut self, environment: EnvironmentPolicyConfig) -> Self {
-        self.environment = environment;
+        self.environment = Box::new(environment);
         self
     }
 
@@ -236,15 +237,16 @@ impl RunSandboxScope {
     }
 }
 
+pub(crate) const NO_SANDBOX_WARNING: &str =
+    "[harn] warning: harn run --no-sandbox disables filesystem, process, and egress sandbox defaults\n";
+
 pub(super) fn install_run_sandbox_scope(
     options: &RunSandboxOptions,
     workspace_root: &Path,
     stderr: &mut String,
 ) -> RunSandboxScope {
     if !options.enabled {
-        stderr.push_str(
-            "warning: harn run --no-sandbox disables filesystem, process, and egress sandbox defaults\n",
-        );
+        stderr.push_str(NO_SANDBOX_WARNING);
         return RunSandboxScope::disabled();
     }
 

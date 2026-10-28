@@ -7,7 +7,11 @@ use crate::value::{ErrorCategory, VmDictExt, VmError, VmValue};
 use super::data_controls::DataControlsReceipt;
 use super::errors::{LlmErrorKind, LlmErrorReason};
 
+pub(super) mod account;
 mod admission;
+pub use account::{
+    capture_process_attestations, ProviderAccountAttestation, HOST_ACCOUNT_ATTESTATIONS_ENV,
+};
 pub use admission::{
     inference_admission_schemas, preview_inference_admission, DataControlsRefusal,
     InferenceAdmissionRequest, InferenceAdmissionSnapshot, InferenceAdmissionStatus,
@@ -22,6 +26,7 @@ enum DenialRule {
     TrainingUnknown,
     UnknownProvider,
     UntrustedLocalEndpoint,
+    WireRouteChanged,
 }
 
 impl DenialRule {
@@ -33,6 +38,7 @@ impl DenialRule {
             Self::TrainingUnknown => "inference_boundary.training_unknown",
             Self::UnknownProvider => "inference_boundary.catalog_provider_unknown",
             Self::UntrustedLocalEndpoint => "inference_boundary.local_endpoint_untrusted",
+            Self::WireRouteChanged => "inference_boundary.wire_route_changed",
         }
     }
 
@@ -175,7 +181,7 @@ pub(crate) fn governing_rule(
     model: &str,
     controls: &DataControlsReceipt,
 ) -> Result<&'static str, BoundaryDenial> {
-    let evidence = catalog_evidence(provider, model)?;
+    let evidence = catalog_evidence(provider, model, true)?;
     let facts = RouteFacts {
         local: evidence.local_runtime,
         open_weight: evidence.open_weight,
@@ -185,29 +191,44 @@ pub(crate) fn governing_rule(
             .iter()
             .any(|control| control.effect == "training"),
     };
-    decide(boundary, provider, model, facts)
+    decide(boundary, provider, model, facts).map_err(|mut denial| {
+        if let (DenialRule::TrainingUnknown, Some(note)) = (denial.rule, &controls.note) {
+            denial.message.push_str(". ");
+            denial.message.push_str(note);
+        }
+        denial
+    })
 }
 
 pub(crate) fn catalog_evidence(
     provider: &str,
     model: &str,
+    enforce_host_ceiling: bool,
 ) -> Result<InferenceCatalogEvidence, BoundaryDenial> {
     let provider_def = crate::llm_config::provider_config(provider)
         .ok_or_else(|| DenialRule::UnknownProvider.refuse(provider.to_string()))?;
-    if provider_def.local_runtime.is_some()
-        && !is_loopback_endpoint(&crate::llm_config::resolve_base_url(&provider_def))
-    {
+    let local_runtime = if enforce_host_ceiling {
+        crate::llm_config::trusted_local_runtime(provider)
+            .ok_or_else(|| DenialRule::UnknownProvider.refuse(provider.to_string()))?
+    } else {
+        provider_def.local_runtime.is_some()
+    };
+    if local_runtime && !is_loopback_endpoint(&crate::llm_config::resolve_base_url(&provider_def)) {
         return Err(DenialRule::UntrustedLocalEndpoint.refuse(format!(
             "{provider}/{model} does not resolve to a loopback endpoint"
         )));
     }
     Ok(InferenceCatalogEvidence {
-        local_runtime: provider_def.local_runtime.is_some(),
+        local_runtime,
         open_weight: {
             let (owner, identity) = crate::llm::managed_supply::logical_route(provider, model)
                 .map_err(|_| DenialRule::UnknownProvider.refuse(provider.to_string()))?;
-            crate::llm_config::model_catalog_entry_for_route(&owner, &identity)
-                .and_then(|row| row.open_weight)
+            if enforce_host_ceiling {
+                crate::llm_config::trusted_open_weight(&owner, &identity)
+            } else {
+                crate::llm_config::model_catalog_entry_for_route(&owner, &identity)
+                    .and_then(|row| row.open_weight)
+            }
         },
     })
 }
@@ -263,7 +284,7 @@ fn decide(
             "{provider}/{model} trains on API traffic without an applied training control"
         ))),
         _ => Err(DenialRule::TrainingUnknown.refuse(format!(
-            "no verified no-training fact for {provider}/{model}"
+            "Harn cannot confirm a no-training fact for {provider}/{model}"
         ))),
     }
 }
@@ -297,6 +318,7 @@ pub(crate) fn preflight_chat(
         request.data_controls,
         boundary,
         request.api_mode,
+        Some(&request.api_key),
     );
     preflight(
         request.inference_boundary,
@@ -306,12 +328,95 @@ pub(crate) fn preflight_chat(
     )
 }
 
+/// The concrete route admitted before a provider adapter shapes its request.
+/// It travels to the last wire boundary instead of reconstructing admission
+/// from mutable project options or the provider's response.
+pub(crate) struct ApprovedWireRoute {
+    provider: String,
+    endpoint: String,
+    model: String,
+}
+
+impl ApprovedWireRoute {
+    pub(crate) fn capture(
+        boundary: Option<InferenceBoundary>,
+        provider: &str,
+        endpoint: &str,
+        model: &str,
+    ) -> Option<Self> {
+        boundary.map(|_| Self {
+            provider: provider.to_string(),
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+        })
+    }
+
+    pub(crate) fn verify(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), VmError> {
+        self.verify_model(
+            provider,
+            endpoint,
+            body.get("model").and_then(serde_json::Value::as_str),
+            body,
+        )
+    }
+
+    /// URL-routed providers carry the model in the endpoint instead of the body.
+    pub(crate) fn verify_url_model(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        model: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), VmError> {
+        if body
+            .get("model")
+            .is_some_and(|value| value.as_str() != Some(model))
+        {
+            return Err(DenialRule::WireRouteChanged
+                .refuse("the final wire route differs from the admitted route".into())
+                .into());
+        }
+        self.verify_model(provider, endpoint, Some(model), body)
+    }
+
+    fn verify_model(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        model: Option<&str>,
+        body: &serde_json::Value,
+    ) -> Result<(), VmError> {
+        let fallback_models = provider == "openrouter"
+            && ["models", "fallbacks"].iter().any(|key| {
+                body.get(key).is_some_and(|value| {
+                    !value.is_null() && value.as_array().is_none_or(|models| !models.is_empty())
+                })
+            });
+        if self.provider != provider
+            || self.endpoint != endpoint
+            || model != Some(self.model.as_str())
+            || fallback_models
+        {
+            return Err(DenialRule::WireRouteChanged
+                .refuse("the final wire route differs from the admitted route".into())
+                .into());
+        }
+        Ok(())
+    }
+}
+
 fn chat_controls(
     provider: &str,
     model: &str,
     requested_posture: crate::llm_config::DataPosture,
     boundary: Option<InferenceBoundary>,
     api_mode: super::options::LlmApiMode,
+    credential: Option<&str>,
 ) -> super::data_controls::DataControlsPlan {
     // The shared HTTP transports apply the resolved data-control plan again
     // at send time. Native/ACP/Responses adapters do not, so never credit a
@@ -335,13 +440,69 @@ fn chat_controls(
             super::DialectContract::for_route(provider, model).stream_protocol(),
         ),
         posture,
-        boundary.filter(|_| shared_transport),
+        boundary,
+        credential,
+        if shared_transport {
+            super::data_controls::ControlDelivery::Written
+        } else {
+            super::data_controls::ControlDelivery::Unsupported
+        },
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_wire_route_refuses_changes_after_admission() {
+        let approved = ApprovedWireRoute::capture(
+            Some(InferenceBoundary {
+                reach: InferenceReach::AnyHosted,
+                allow_training_discounts: false,
+            }),
+            "openrouter",
+            "https://approved.example/v1/chat/completions",
+            "known-model",
+        )
+        .unwrap();
+        let body = serde_json::json!({"model": "known-model"});
+        assert!(approved
+            .verify(
+                "openrouter",
+                "https://approved.example/v1/chat/completions",
+                &body
+            )
+            .is_ok());
+        assert!(approved
+            .verify(
+                "other-provider",
+                "https://approved.example/v1/chat/completions",
+                &body
+            )
+            .is_err());
+        assert!(approved
+            .verify(
+                "openrouter",
+                "https://redirected.example/v1/chat/completions",
+                &body
+            )
+            .is_err());
+        assert!(approved
+            .verify(
+                "openrouter",
+                "https://approved.example/v1/chat/completions",
+                &serde_json::json!({"model":"other-model"})
+            )
+            .is_err());
+        assert!(approved
+            .verify(
+                "openrouter",
+                "https://approved.example/v1/chat/completions",
+                &serde_json::json!({"model":"known-model", "models":["other-model"]})
+            )
+            .is_err());
+    }
 
     #[test]
     fn local_provider_tag_does_not_make_a_remote_endpoint_local() {

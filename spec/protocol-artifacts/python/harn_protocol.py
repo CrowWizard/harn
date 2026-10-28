@@ -168,6 +168,8 @@ __all__ = [
     "HarnInferenceAdmissionBoundary",
     "HarnInferenceAdmissionRequest",
     "HarnInferenceAdmissionSnapshot",
+    "HarnNoTrainingRequirement",
+    "HarnProviderAccountAttestation",
     "HarnMachineSpendExhaustion",
     "HarnMachineSpendPeriod",
     "ACPArtifactUpdateMetaHarn",
@@ -241,7 +243,7 @@ __all__ = [
 
 HARN_AGENT_EVENT_METHOD: str = "_harn/agentEvent"
 HARN_PROVIDER_CATALOG_METHOD: str = "_harn/providerCatalog"
-ACP_SCHEMA_COMPATIBILITY: str = "agentclientprotocol/agent-client-protocol schema v0.12.2"
+ACP_SCHEMA_COMPATIBILITY: str = "agentclientprotocol/agent-client-protocol schema v1.26.0"
 ACP_PROMPT_ERROR_DATA_SCHEMA: str = "harn.acp.prompt_error.v1"
 A2A_PROTOCOL_VERSION: str = "0.3.0"
 MCP_PROTOCOL_VERSION: str = "2026-07-28"
@@ -2353,6 +2355,11 @@ class HarnInferenceAdmissionDataPosture(str, Enum):
     STRICTEST_AVAILABLE = "strictest_available"
 
 
+class HarnNoTrainingRequirement(str, Enum):
+    BILLING_ENABLED = "billing_enabled"
+    CONTRIBUTOR_SHARING_DISABLED = "contributor_sharing_disabled"
+
+
 class HarnInferenceAdmissionDataControlsOutcome(str, Enum):
     NOT_REQUESTED = "not_requested"
     APPLIED = "applied"
@@ -2390,6 +2397,7 @@ class HarnInferenceAdmissionSnapshot(_HarnDataclass):
     status: HarnInferenceAdmissionStatus
     training_control_planned: bool
     data_posture: HarnInferenceAdmissionDataPosture
+    account_confirmation_applied: Optional[bool] = None
     data_controls_note: Optional[str] = None
     data_controls_outcome: Optional[HarnInferenceAdmissionDataControlsOutcome] = None
     data_controls_refusal: Optional[HarnInferenceAdmissionDataControlsRefusal] = None
@@ -2397,7 +2405,15 @@ class HarnInferenceAdmissionSnapshot(_HarnDataclass):
     governing_rule: Optional[str] = None
     local_runtime: Optional[bool] = None
     open_weight: Optional[bool] = None
+    required_account_facts: Optional[List[HarnNoTrainingRequirement]] = None
     training_default: Optional[str] = None
+
+@dataclass
+class HarnProviderAccountAttestation(_HarnDataclass):
+    provider: str
+    credential_fingerprint: str
+    billing_enabled: Optional[bool] = None
+    contributor_sharing_enabled: Optional[bool] = None
 @dataclass
 class HarnCanonicalSessionBoundary(_HarnDataclass):
     schema: str

@@ -214,12 +214,12 @@ pub(crate) use profile::ProfileArgs;
 pub(crate) use provider::ProviderToolProbeFormatArg;
 pub(crate) use provider::{
     refresh_provider_catalog_if_requested, ProviderAdmissionArgs, ProviderArgs,
-    ProviderCacheProbeArgs, ProviderCapabilitiesArgs, ProviderCapabilitiesCommand,
-    ProviderCapabilitiesPromoteFromEvalArgs, ProviderCommand, ProviderDispatchAuditArgs,
-    ProviderDispatchAuditVariantArg, ProviderDispatchExplainArgs, ProviderEffortProbeArgs,
-    ProviderLimitsArgs, ProviderOptionProbeArgs, ProviderProbeArgs, ProviderToolCalibrateArgs,
-    ProviderToolProbeArgs, ProviderToolProbeAuditArgs, ProviderToolProbeCaseArg,
-    ProviderToolScorecardArgs,
+    ProviderAttestAccountArgs, ProviderCacheProbeArgs, ProviderCapabilitiesArgs,
+    ProviderCapabilitiesCommand, ProviderCapabilitiesPromoteFromEvalArgs, ProviderCommand,
+    ProviderDispatchAuditArgs, ProviderDispatchAuditVariantArg, ProviderDispatchExplainArgs,
+    ProviderEffortProbeArgs, ProviderLimitsArgs, ProviderOptionProbeArgs, ProviderProbeArgs,
+    ProviderToolCalibrateArgs, ProviderToolProbeArgs, ProviderToolProbeAuditArgs,
+    ProviderToolProbeCaseArg, ProviderToolScorecardArgs,
 };
 #[cfg(test)]
 pub(crate) use provider::{ProviderPortableOptionArg, ProviderToolProbeModeArg};
@@ -311,6 +311,10 @@ use clap::{Parser, Subcommand};
     arg_required_else_help = true
 )]
 pub(crate) struct Cli {
+    /// Show error details; for config inspect, include per-field provenance.
+    #[arg(long, global = true)]
+    pub explain: bool,
+
     /// Consume a bounded parent secret-store frame from stdin before dispatch.
     /// Values remain in memory, without ambient store fallback or tool inheritance.
     #[arg(long = harn_vm::secrets::PARENT_SECRET_HANDOFF_OPTION, global = true)]

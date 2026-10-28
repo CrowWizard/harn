@@ -6,6 +6,13 @@ impl AcpServer {
         id: &serde_json::Value,
         params: &serde_json::Value,
     ) {
+        let workspace_checkpoint = match Self::parse_workspace_checkpoint(params) {
+            Ok(value) => value.unwrap_or(false),
+            Err(message) => {
+                self.send_error(id, -32602, message);
+                return;
+            }
+        };
         let cwd = params
             .get("cwd")
             .and_then(|v| v.as_str())
@@ -56,6 +63,7 @@ impl AcpServer {
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             session.environment_policy = environment_policy;
+            session.workspace_checkpoint = workspace_checkpoint;
         }
         let session = self
             .session_item_json(&session_id, "live", None)
@@ -66,12 +74,28 @@ impl AcpServer {
             serde_json::json!({
                 "sessionId": session_id,
                 "session": session,
+                "workspaceCheckpointTracking": workspace_checkpoint,
                 "modes": modes::session_mode_state(modes::DEFAULT_MODE_ID),
                 "configOptions": self.config_options_for_session(&session_id, modes::DEFAULT_MODE_ID),
             }),
         );
 
         self.emit_available_commands(&session_id);
+    }
+
+    pub(super) fn parse_workspace_checkpoint(
+        params: &serde_json::Value,
+    ) -> Result<Option<bool>, &'static str> {
+        let value = match params.get("workspaceCheckpoint") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Bool(enabled)) => Some(*enabled),
+            Some(_) => return Err("workspaceCheckpoint must be a boolean"),
+        };
+        #[cfg(not(feature = "hostlib"))]
+        if value == Some(true) {
+            return Err("workspaceCheckpoint requires the hostlib feature");
+        }
+        Ok(value)
     }
 
     /// Parse and launch the `environmentPolicy` block at a runnable session
@@ -496,6 +520,14 @@ impl AcpServer {
                 self.send_error(id, -32602, "Missing session_id");
                 return;
             };
+            let inherit_checkpoint = match params.get("inheritWorkspaceCheckpoint") {
+                None => false,
+                Some(serde_json::Value::Bool(value)) => *value,
+                Some(_) => {
+                    self.send_error(id, -32602, "inheritWorkspaceCheckpoint must be a boolean");
+                    return;
+                }
+            };
             if let Err(error) = self.prompt_admission(&src_id) {
                 self.send_error(id, -32602, &error);
                 return;
@@ -664,6 +696,10 @@ impl AcpServer {
                 .sessions
                 .get(&src_id)
                 .is_none_or(|session| session.admission_unavailable);
+            let workspace_checkpoint = self
+                .sessions
+                .get(&src_id)
+                .is_some_and(|session| session.workspace_checkpoint);
             // A fork is the same session lineage: it inherits the parent's
             // environment policy (and thus its grants), not a fresh legacy env.
             let cancellation = self.register_session_cancellation(&new_session_id);
@@ -673,6 +709,8 @@ impl AcpServer {
             let fork_cwd = harn_vm::agent_sessions::workspace_anchor(&new_session_id)
                 .map(|anchor| anchor.primary)
                 .unwrap_or(src_cwd);
+            #[cfg(feature = "hostlib")]
+            let checkpoint_root = fork_cwd.clone();
             let project_root = session_project_root_for_cwd(&fork_cwd);
             self.track_known_session(&new_session_id);
             self.sessions.insert(
@@ -681,6 +719,8 @@ impl AcpServer {
                     cwd: fork_cwd,
                     project_root,
                     store_scope: scope.clone(),
+                    workspace_checkpoint,
+                    checkpoint_tracking: super::checkpoint_tracking::CheckpointTracking::default(),
                     cancellation,
                     host_bridge: None,
                     inject_state: concurrent_control.inject_state.clone(),
@@ -699,17 +739,46 @@ impl AcpServer {
             self.sync_session_workspace_warm(&new_session_id);
             self.emit_session_info_update(&new_session_id, &info);
             self.emit_available_commands(&new_session_id);
-            self.send_response(
-            id,
-            serde_json::json!({
+            let mut response = serde_json::json!({
                 "sessionId": new_session_id,
                 "state": "forked",
                 "parent_id": src_id,
                 "canonicalBoundary": source_boundary,
                 "modes": modes::session_mode_state(&parent_mode_id),
                 "configOptions": self.config_options_for_session(&new_session_id, &parent_mode_id),
-            }),
-        );
+            });
+            if inherit_checkpoint {
+                #[cfg(feature = "hostlib")]
+                let checkpoint = match harn_hostlib::workspace_checkpoint::fork_session(
+                    &src_id,
+                    &new_session_id,
+                    &checkpoint_root,
+                ) {
+                    Ok(outcome) => {
+                        serde_json::to_value(outcome).expect("checkpoint result serializes")
+                    }
+                    Err(error) => {
+                        serde_json::json!({"available": false, "reason": "fork_failed", "detail": error.to_string()})
+                    }
+                };
+                #[cfg(not(feature = "hostlib"))]
+                let checkpoint =
+                    serde_json::json!({"available": false, "reason": "hostlib_unavailable"});
+                response["workspaceCheckpoint"] = checkpoint;
+            }
+            // Copy identities after the checkpoint snapshot. A concurrent
+            // injection can then add a conservative extra identity, but can
+            // never leave a copied boundary without its reserved identity.
+            let tracking = self
+                .sessions
+                .get(&src_id)
+                .map(|session| session.checkpoint_tracking.fork(inherit_checkpoint))
+                .unwrap_or_default();
+            self.sessions
+                .get_mut(&new_session_id)
+                .expect("fork session")
+                .checkpoint_tracking = tracking;
+            self.send_response(id, response);
         })
     }
 

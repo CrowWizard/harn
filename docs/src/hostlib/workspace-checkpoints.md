@@ -25,15 +25,62 @@ A host calls `checkpoint_capture` once per user message, brackets every tool
 and shell call with `checkpoint_call_begin` and `checkpoint_call_end`, and
 passes the tool annotation's side-effect class as `side_effect`.
 
+Hosts using `harness.fs.checkpoint_capture` can require writer evidence by
+setting `writer_policy: "require_known"` on the first capture. They must verify
+that the receipt echoes that policy.
+The policy stays with the session and its forks. A scan detects changed paths
+but cannot identify their writers, so strict restore refuses those paths. The
+default `legacy_scan` policy preserves scan-based behavior for existing hosts.
+Plan entries report the writers and the observed file state. After obtaining a
+person's confirmation, a host can pass `confirmed_paths` to restore as a list
+of `{session_id, boundary_id, path, observed}` records copied from the plan.
+A different session, boundary, or later file change does not match that
+confirmation and is refused. The confirmation is supplied by the host; Harn
+cannot verify that the host actually showed an approval prompt.
+Strict restore currently recreates absent files only, using an atomic
+no-replace operation on Unix. It refuses replacement and deletion of existing
+files, even after confirmation, because another writer could change the path
+between a content check and the mutation. Strict recreation is unavailable on
+other platforms.
+
 ## ACP
 
 `session/workspace_checkpoint` carries the same actions for ACP clients. Params:
 `{sessionId, action, boundaryId?, callId?, sideEffect?, paths?}` where `action`
 is `capture`, `call_begin`, `call_end`, `plan`, `restore`, or `drop`. The root is
 the session's cwd, and the result is the same typed object the `harness.fs`
-method returns. `session/close` drops the session's checkpoint state. The
-server does not bracket tool calls itself: the host that owns the turn calls
-`capture` at each user message and `call_begin` / `call_end` around each call.
+method returns. `session/close` drops the session's checkpoint state.
+
+Set `workspaceCheckpoint: true` on `session/new` or a cold `session/load` to
+capture a boundary when a prompt starts a turn. The prompt must carry a
+nonempty `messageId`; Harn uses that identity as the boundary ID. The default
+is `false`, and a server without
+hostlib rejects `true`. A fork inherits this setting. A repeated `messageId`
+is rejected in an opted-in session. The session response confirms the
+setting in `workspaceCheckpointTracking`; clients must not treat a missing
+field as enabled. Captures can be unavailable without blocking the prompt.
+Query `plan` before offering file restoration; a failed
+capture returns `{available: false, reason: "capture_failed"}` from `plan`
+and `restore`, even if an older boundary used that ID. Loading an already-live
+session cannot change its tracking setting. A cold load starts a new in-memory
+checkpoint history; it doesn't restore earlier file boundaries. A steer
+inserted into a running turn captures its own boundary immediately before its
+message enters the transcript. If a tool call is still in flight or capture
+otherwise fails, `plan` and `restore` report `capture_failed` for that message.
+The host must bracket tool and shell calls with `call_begin` and `call_end` and
+capture any additional boundaries it needs.
+After a session is reanchored, checkpoint actions other than `drop` return
+`{available: false, reason: "workspace_root_changed"}` while their recorded
+root differs from the session's current root.
+
+An ACP client can pass `inheritWorkspaceCheckpoint: true` to `session/fork`.
+The fork response then includes `workspaceCheckpoint`, which reports whether
+the parent's checkpoint history was copied to the new session. An unavailable
+result is explicit and does not prevent the conversation fork. The copy has
+independent checkpoint state and stored files, so restoring it or closing the
+parent does not change the other branch's history. Forks without this option
+do not copy checkpoints. Checkpoint state is still in memory and does not
+survive a server restart.
 
 ## What a boundary stores
 
@@ -77,9 +124,12 @@ A full restore with nothing refused, failed, or unrestorable discards later
 boundaries and their attributions. Otherwise only the restored paths leave the
 attribution, so a retry keeps its guard.
 
-If a directory was unreadable during a call, or a file vanished mid-scan, that
-call's attribution for the affected paths is marked `incomplete` and a restore
-refuses them.
+If the initial scan cannot read the workspace, capture returns
+`incomplete_capture` and records no boundary. If a scan fails during a later
+call, planning and restoring that boundary return `incomplete_attribution`.
+An empty list of observed changes cannot prove that an unreadable directory
+contained no changes. Planning, restoring, and copying checkpoint history
+return `calls_in_flight` while a checkpointed call has no end receipt.
 
 ## Receipt
 
@@ -99,6 +149,10 @@ the rest of the restore still runs. `restored`, `refused`, and `skipped` are pla
   diff.
 - Symlinks, nested repositories, and tracked files that an ignore rule matches
   are outside the index.
+- Declared Harn runtime state is not a workspace edit. This includes the
+  session database and sidecars, writer locks, checkpoints, and scanner state,
+  including source-relative state in nested directories. Other `.harn` files
+  remain eligible for attribution and restore.
 - Clean tracked content depends on the git objects for the boundary's index
   staying in the object store. Garbage collection can remove them after the
   index moves on.

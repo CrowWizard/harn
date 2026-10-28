@@ -21,6 +21,13 @@ use crate::llm_config::{
 
 use super::dialect::StreamProtocol;
 
+/// Whether this transport writes the plan's request controls on the wire.
+#[derive(Clone, Copy)]
+pub(crate) enum ControlDelivery {
+    Written,
+    Unsupported,
+}
+
 /// Exhaustive map from the live wire dialect to its registry name.
 ///
 /// Written as a total match on purpose: adding a `StreamProtocol` variant
@@ -104,6 +111,9 @@ pub struct DataControlsReceipt {
     /// `Some(TrainingDefault::Unspecified)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub training_default: Option<TrainingDefault>,
+    /// This no-training fact relies on the host's credential-bound confirmation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account_confirmation_applied: bool,
     /// The registry's `control_scope` for this provider, absent when the
     /// provider is unresearched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,9 +192,7 @@ pub(crate) fn training_refusal(
     if posture != DataPosture::StrictestAvailable {
         return None;
     }
-    if crate::llm_config::effective_training_default(provider, model)
-        != Some(crate::llm_config::TrainingDefault::Trains)
-    {
+    if receipt.training_default != Some(crate::llm_config::TrainingDefault::Trains) {
         return None;
     }
     if receipt
@@ -196,6 +204,11 @@ pub(crate) fn training_refusal(
     }
     let sources = crate::llm_config::model_data_controls(model)
         .map(|controls| controls.sources)
+        .or_else(|| {
+            crate::llm_config::resolved_endpoint_data_controls(provider)
+                .verified()
+                .map(|controls| controls.sources)
+        })
         .or_else(|| {
             crate::llm_config::provider_config(provider)
                 .and_then(|definition| definition.data_controls)
@@ -220,13 +233,22 @@ pub(crate) fn training_refusal(
 ///
 /// Under the `Default` posture the plan is empty, so the request stays
 /// byte-for-byte what the provider adapter built.
+#[cfg(test)]
 pub(crate) fn resolve(
     provider: &str,
     model: &str,
     dialect: DataControlDialect,
     posture: DataPosture,
 ) -> DataControlsPlan {
-    resolve_for_boundary(provider, model, dialect, posture, None)
+    resolve_for_boundary(
+        provider,
+        model,
+        dialect,
+        posture,
+        None,
+        None,
+        ControlDelivery::Written,
+    )
 }
 
 /// Apply only the training controls required by the host ceiling in addition
@@ -237,6 +259,8 @@ pub(crate) fn resolve_for_boundary(
     dialect: DataControlDialect,
     posture: DataPosture,
     boundary: Option<super::inference_boundary::InferenceBoundary>,
+    credential: Option<&str>,
+    control_delivery: ControlDelivery,
 ) -> DataControlsPlan {
     let requested_posture = match posture {
         DataPosture::Default => "default",
@@ -244,19 +268,84 @@ pub(crate) fn resolve_for_boundary(
     }
     .to_string();
 
-    let declaration = crate::llm_config::provider_config(provider)
-        .and_then(|definition| definition.data_controls);
+    let trusted = boundary.map(|_| crate::llm_config::trusted_data_controls(provider, model));
+    let endpoint_scope = trusted
+        .as_ref()
+        .map(|facts| facts.endpoint.clone())
+        .unwrap_or_else(|| crate::llm_config::resolved_endpoint_data_controls(provider));
+    let declaration = if matches!(
+        endpoint_scope,
+        crate::llm_config::EndpointDataControls::Unverified
+    ) {
+        None
+    } else {
+        match &trusted {
+            Some(facts) => facts.provider.clone().map(|mut declaration| {
+                let selected = crate::llm_config::provider_config(provider)
+                    .and_then(|definition| definition.data_controls);
+                declaration.request_controls.retain(|control| {
+                    selected
+                        .as_ref()
+                        .is_some_and(|definition| definition.request_controls.contains(control))
+                });
+                declaration
+            }),
+            None => crate::llm_config::provider_config(provider)
+                .and_then(|definition| definition.data_controls),
+        }
+    };
     // The route's own declaration wins over its provider's, for both the
     // reported posture and the note a host may surface verbatim.
-    let route_controls = crate::llm_config::model_data_controls(model);
-    let training_default = crate::llm_config::effective_training_default(provider, model);
+    let route_controls = match &trusted {
+        Some(facts) => facts.model.clone(),
+        None => crate::llm_config::model_data_controls(model),
+    };
+    let endpoint_controls = endpoint_scope.clone().verified();
+    let selected_training = crate::llm_config::effective_training_default(provider, model);
+    let account_confirmed = trusted.as_ref().is_some_and(|facts| {
+        super::inference_boundary::account::confirmed(
+            provider,
+            credential,
+            facts.no_training_requirements(),
+        )
+    });
+    let training_default = match &trusted {
+        Some(facts) => {
+            let admitted = if account_confirmed {
+                Some(TrainingDefault::DoesNotTrain)
+            } else {
+                intersect_training_facts(facts.training_default, selected_training)
+            };
+            crate::llm_config::execution_training_restrictions(provider, model)
+                .into_iter()
+                .fold(admitted, |current, restriction| {
+                    intersect_training_facts(current, Some(restriction))
+                })
+        }
+        None => selected_training,
+    };
+    let account_confirmation_applied =
+        account_confirmed && training_default == Some(TrainingDefault::DoesNotTrain);
     let require_training_control = boundary.is_some_and(|boundary| {
         !boundary.allow_training_discounts
             && training_default != Some(TrainingDefault::DoesNotTrain)
     });
-    let route_note = |provider_note: Option<String>| match &route_controls {
-        Some(controls) => controls.note.clone(),
-        None => provider_note,
+    let route_note = |provider_note: Option<String>| {
+        if matches!(
+            endpoint_scope,
+            crate::llm_config::EndpointDataControls::Unverified
+        ) {
+            return None;
+        }
+        route_controls
+            .as_ref()
+            .map(|controls| controls.note.clone())
+            .or_else(|| {
+                endpoint_controls
+                    .as_ref()
+                    .map(|controls| controls.note.clone())
+            })
+            .unwrap_or(provider_note)
     };
 
     if posture == DataPosture::Default && !require_training_control {
@@ -269,6 +358,7 @@ pub(crate) fn resolve_for_boundary(
                 provider: provider.to_string(),
                 model: model.to_string(),
                 training_default,
+                account_confirmation_applied,
                 control_scope: declaration.as_ref().map(|entry| entry.control_scope),
                 applied: Vec::new(),
                 note: route_note(declaration.and_then(|entry| entry.note)),
@@ -288,6 +378,7 @@ pub(crate) fn resolve_for_boundary(
                 provider: provider.to_string(),
                 model: model.to_string(),
                 training_default,
+                account_confirmation_applied,
                 control_scope: None,
                 applied: Vec::new(),
                 note: route_note(None),
@@ -300,7 +391,10 @@ pub(crate) fn resolve_for_boundary(
     let mut body_writes = Vec::new();
     let mut headers = Vec::new();
     let mut applied = Vec::new();
-    for control in declaration.controls_for_dialect(dialect) {
+    for control in declaration
+        .controls_for_dialect(dialect)
+        .filter(|_| matches!(control_delivery, ControlDelivery::Written))
+    {
         if posture == DataPosture::Default && control.effect != DataControlEffect::Training {
             continue;
         }
@@ -335,12 +429,32 @@ pub(crate) fn resolve_for_boundary(
             provider: provider.to_string(),
             model: model.to_string(),
             training_default,
+            account_confirmation_applied,
             control_scope: Some(declaration.control_scope),
             applied,
             note: route_note(declaration.note),
             inference_boundary_rule: None,
             inference_catalog_evidence: None,
         },
+    }
+}
+
+/// A package can restrict a route but cannot invent a no-training fact.
+fn intersect_training_facts(
+    trusted: Option<TrainingDefault>,
+    selected: Option<TrainingDefault>,
+) -> Option<TrainingDefault> {
+    match (trusted, selected) {
+        (None, _) | (_, None) => None,
+        (Some(TrainingDefault::Unspecified), _) | (_, Some(TrainingDefault::Unspecified)) => {
+            Some(TrainingDefault::Unspecified)
+        }
+        (Some(TrainingDefault::Trains), _) | (_, Some(TrainingDefault::Trains)) => {
+            Some(TrainingDefault::Trains)
+        }
+        (Some(TrainingDefault::DoesNotTrain), Some(TrainingDefault::DoesNotTrain)) => {
+            Some(TrainingDefault::DoesNotTrain)
+        }
     }
 }
 

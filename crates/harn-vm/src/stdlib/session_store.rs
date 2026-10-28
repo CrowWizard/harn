@@ -30,7 +30,7 @@ use crate::value::{categorized_error, DictMap, ErrorCategory, VmError, VmValue};
 
 const LEGACY_STORE_DIR: &str = "session-store";
 const LEGACY_EVENT_FILE_EXT: &str = "jsonl";
-const STORE_DB_FILE: &str = "session-store.sqlite";
+const STORE_DB_FILE: &str = harn_session_store::SESSION_STORE_DATABASE_FILE;
 /// Directory name for state under an explicitly named store root. The
 /// defaulted case goes through `runtime_paths::state_root` instead, which
 /// owns the same name plus the `HARN_STATE_DIR` override.
@@ -61,6 +61,9 @@ const STORE_ROOT_ENV: &str = "HARN_SESSION_STORE_ROOT";
 const DEFAULT_ACTOR: &str = "harn";
 const DEFAULT_KIND_TYPE: &str = "LibrarianEntry";
 const LEGACY_IMPORT_FORMAT: &str = "harn.session.jsonl.v1";
+
+#[path = "session_store_presence.rs"]
+mod presence;
 
 harn_vm_core::stdlib_module_installer!(Host, pub(crate) fn register_session_store_builtins);
 
@@ -138,6 +141,21 @@ async fn session_store_events_impl(
         .map(stored_event_value)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(store_read_present_value(VmValue::list(values)))
+}
+
+#[harn_builtin(
+    exposure = "harness.agent.session_store_presence",
+    effects = ["fs.read@dynamic", "state.read@arg0"],
+    sig = "__session_store_presence(session_id: string, options?: dict) -> SessionStorePresence",
+    kind = "async",
+    category = "session_store",
+    doc = "Read bounded journal presence through an already-owned store. Unavailable requires a supported fallback; it does not mean missing."
+)]
+async fn session_store_presence_impl(
+    _ctx: crate::vm::AsyncBuiltinCtx,
+    args: Vec<VmValue>,
+) -> Result<VmValue, VmError> {
+    presence::lookup(args)
 }
 
 #[harn_builtin(
