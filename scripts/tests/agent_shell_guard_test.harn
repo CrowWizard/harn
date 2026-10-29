@@ -1,6 +1,7 @@
 // Tests for the shared Codex and Claude shell guard.
 import {
   GIT_ALIASES_UNREADABLE,
+  GitAliasContext,
   ShellGuardDecision,
   cargo_violation,
   discarded_output_violation,
@@ -387,6 +388,102 @@ pipeline test_git_stash_writes_are_denied_across_parser_shapes(harness: Harness,
       !decision(codex_payload(command), NO_MAKE_TARGETS).allow,
       command + " is refused for Codex in any repository",
     )
+  }
+}
+
+/** Hook-shaped git facts: `-C` names a directory whose configuration git cannot read. */
+const ALIASES_UNREADABLE_UNDER_C: fn(GitAliasContext) -> dict = { context ->
+  context.options.contains("-C") ? {"<unreadable>": ""} : {}
+}
+
+const COMMIT_LOG_GREP_BUILTINS: fn(string) -> list<string> = { _program ->
+  ["commit", "grep", "log", "stash", "status"]
+}
+
+fn guard_with_git_facts(command: string) -> ShellGuardDecision {
+  return decision(
+    claude_payload(command),
+    ADMITTED,
+    NO_MAKE_TARGETS,
+    ALIASES_UNREADABLE_UNDER_C,
+    COMMIT_LOG_GREP_BUILTINS,
+  )
+}
+
+/** Runtimes before descriptor duplication resolved report `2>&1` as unresolved syntax. */
+fn scanner_resolves_descriptor_duplication() -> bool {
+  const scan = command_risk_scan({request: {mode: "shell", command: "git log 2>&1"}})
+  return scan.execution_semantics?.resolved == true
+}
+
+/** Runtimes before named descriptors failed closed resolve `{name}>file`. */
+fn scanner_flags_named_descriptors() -> bool {
+  const scan = command_risk_scan({request: {mode: "shell", command: "true {PATH}>/dev/null"}})
+  return scan.execution_semantics?.resolved == false
+}
+
+@test
+pipeline test_descriptor_duplication_and_escapes_keep_git_builtins_allowed(
+  harness: Harness,
+  task: unknown,
+) {
+  // A backslash that only quotes one character constructs no assignment, on every runtime.
+  for command in [
+    "git -C /w grep -n \"a\\|b\" HEAD",
+    "git -C /w status && git -C /w log -S \"a\\|b\" --oneline",
+    "git -C /w status; git -C /w log -S foo --oneline",
+  ] {
+    const escaped = guard_with_git_facts(command)
+    assert(escaped.allow, command + " carries only plain data: " + escaped.reason)
+  }
+  // NEGATIVE CONTROL: the injected facts are load-bearing. A verb that is not a builtin must
+  // consult the unreadable configuration and refuse, so the allows above are not vacuous.
+  assert(!guard_with_git_facts("git -C /w lg \"a\\|b\"").allow)
+  assert(!guard_with_git_facts("git -C /w lg 2>&1").allow)
+  assert(!guard_with_git_facts("git -C /w stash 2>&1").allow, "a stash write stays refused")
+  assert(!guard_with_git_facts("cd /w && git stash pop 2>&1").allow)
+  // A name-assigning builtin sets the variable its operand names even when the name is escaped,
+  // quoted or expanded, and the scanner does not project it inside compound commands.
+  for command in [
+    "if true; then export PA\\TH=/evil; fi; git -C /w status",
+    "{ export PA\\TH=/evil; }; git -C /w status",
+    "for x in 1; do export PA\\TH=/evil; done; git -C /w status",
+    "if true; then declare -x PA\\TH=/evil; fi; git -C /w status",
+    "if true; then export \"PATH=/evil\"; fi; git -C /w status",
+    "if true; then export P'A'TH=/evil; fi; git -C /w status",
+    "if true; then typeset -x $name=/evil; fi; git -C /w status",
+    "if true; then readonly PA\\TH; fi; git -C /w status",
+    "if true; then unset PA\\TH; fi; git -C /w status",
+    "if true; then read PA\\TH < f; fi; git -C /w status",
+    "if true; then printf -v PA\\TH /evil; fi; git -C /w status",
+  ] {
+    assert(!guard_with_git_facts(command).allow, command + " can change PATH")
+  }
+  // POSITIVE CONTROL: a literal name with a quoted value is still a plain assignment.
+  const literal = guard_with_git_facts("if true; then export FOO=\"a b\"; fi; git -C /w status")
+  assert(literal.allow, "a literal name is not opaque: " + literal.reason)
+  if scanner_flags_named_descriptors() {
+    // `{name}` before any redirect assigns the descriptor number to `name`.
+    for command in [
+      "true {PATH}>&2; git -C /w status",
+      "true {PATH}<&0; git -C /w status",
+      "true {PATH}>&-; git -C /w status",
+      "true {PATH}>/dev/null; git -C /w status",
+    ] {
+      assert(!guard_with_git_facts(command).allow, command + " assigns PATH")
+    }
+  }
+  if !scanner_resolves_descriptor_duplication() {
+    return
+  }
+  for command in [
+    "git -C /w commit -m x > log 2>&1; echo c=$?",
+    "cd /w && git log 2>&1",
+    "git -C /w log >&2",
+    "git -C /w status 2>&1; git -C /w log -S foo 2>&1",
+  ] {
+    const allowed = guard_with_git_facts(command)
+    assert(allowed.allow, command + " duplicates a descriptor only: " + allowed.reason)
   }
 }
 
