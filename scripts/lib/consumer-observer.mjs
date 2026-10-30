@@ -362,11 +362,9 @@ export function observerPublicationWitness(context) {
   return `Confirm consumer observer declaration ${observerContext(context).dispatch_nonce}`;
 }
 
-/** Immutable in-flight publications that predate the nonce witness.
- * @type {readonly {context:Partial<ObserverContext>, retirement?:{jobId:number,artifactId:number,digest:string}}[]} */
+/** Exact completed-parent publications that predate the nonce witness.
+ * @type {readonly {context:Partial<ObserverContext>, retirement:{jobId:number,artifactId:number,digest:string}}[]} */
 const historicalPublications = Object.freeze([
-  {context:{parent_run_id:'41016965350',parent_run_attempt:3,
-    parent_head_sha:'e1ef4c6ae5bcf6445a3b864712f2589f3d8aabcc',source_revision:'e1ef4c6ae5bcf6445a3b864712f2589f3d8aabcc'}},
   {context:{schema:'harn.consumer_observer.v2',parent_repository:parentRepository,
     parent_run_id:'41065732964',parent_run_attempt:1,parent_head_sha:'f45a4d4bf3477fff82ea5e05d897d0d6810e98ef',
     source_revision:'ffb247e184337284fddfbab84da80f490edef57d',
@@ -386,12 +384,12 @@ export function qualifyObserverPublisher(context, jobs, completedPublication) {
   const historical = historicalPublications.find(binding => Object.entries(binding.context).every(([key,value])=>observer[key]===value));
   const retirement = historical?.retirement;
   const parent = completedPublication?.parent;
-  const frozen = historical && (!retirement || (parent?.status === 'completed'
+  const frozen = historical && parent?.status === 'completed'
     && String(parent.id) === observer.parent_run_id && parent.run_attempt === observer.parent_run_attempt
     && parent.head_sha === observer.parent_head_sha && parent.head_repository?.full_name === parentRepository
     && parentWorkflows.has(parent.path) && completedConclusions.has(parent.conclusion)
     && completedPublication.artifact?.id === retirement.artifactId
-    && completedPublication.artifact?.digest === retirement.digest));
+    && completedPublication.artifact?.digest === retirement.digest;
   if (matches.length === 0 && frozen) {
     matches = jobs.flatMap(job => job.steps.filter(step => step.name === observerDeclarationStep).map(step => ({job, step})));
   }
