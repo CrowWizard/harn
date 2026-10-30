@@ -5,9 +5,20 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use clap::{Command, CommandFactory};
-use harn_hostlib::localization::{self as shared, process_locale, Locale};
+pub(crate) use harn_hostlib::localization::Locale;
+use harn_hostlib::localization::{self as shared, process_locale};
 
 use crate::cli::Cli;
+
+include!(concat!(env!("OUT_DIR"), "/localization_formats.rs"));
+
+#[cfg(test)]
+#[path = "../build_support/localization_contract.rs"]
+mod field_contract;
+
+pub(crate) fn selected_locale() -> Locale {
+    process_locale()
+}
 
 const CATALOGS: [(&str, &str); 8] = [
     ("es", include_str!("localization/es.json")),
@@ -114,6 +125,10 @@ fn command_for(locale: &str) -> Command {
 /// Canonical English source for translators and the existing CLI drift guard.
 pub(crate) fn source_catalog() -> Catalog {
     let mut catalog = shared::collect_help_messages(Cli::command());
+    catalog.extend(
+        serde_json::from_str::<Catalog>(include_str!("localization_formats.json"))
+            .expect("checked command-result templates"),
+    );
     for source in RUNTIME_MESSAGES {
         catalog.insert(source.to_owned(), source.to_owned());
     }
@@ -185,7 +200,7 @@ mod tests {
                     tokens
                 };
                 assert_eq!(
-                    tokens(key),
+                    tokens(&source[key]),
                     tokens(value),
                     "{locale} changed CLI syntax in {key}"
                 );
@@ -194,6 +209,68 @@ mod tests {
                 catalog[API_KEY_PROMPT].ends_with(' '),
                 "{locale} credential prompt spacing"
             );
+        }
+    }
+
+    #[test]
+    fn every_catalog_keeps_console_record_field_identifiers() {
+        let source: Catalog = serde_json::from_str(include_str!("localization/en.json")).unwrap();
+        assert!(
+            source.values().any(|text| text.contains("binding_id=")),
+            "measure a known populated console record field"
+        );
+        for (locale, catalog) in TRANSLATIONS.iter() {
+            field_contract::validate_fields(&source, catalog)
+                .unwrap_or_else(|error| panic!("{locale}: {error}"));
+        }
+        field_contract::validate_fields(&source, &source).unwrap();
+    }
+
+    #[test]
+    fn translated_console_record_keys_are_rejected_by_the_catalog_owner() {
+        let source = Catalog::from([(
+            "field".into(),
+            "- binding_id={0} dispatcher_in_flight={1}".into(),
+        )]);
+        assert_eq!(
+            field_contract::field_identifiers(&source["field"]),
+            ["binding_id=", "dispatcher_in_flight="]
+        );
+        let mut translated = source.clone();
+        translated.insert(
+            "field".into(),
+            "- identifiant_de_liaison={0} en_cours_du_dispatcher={1}".into(),
+        );
+        let error = field_contract::validate_fields(&source, &translated)
+            .expect_err("a translated machine field must fail the same owning validator");
+        assert!(error.contains("changed CLI record field identifiers"));
+    }
+
+    #[test]
+    fn every_result_catalog_preserves_complete_rust_format_fields() {
+        let source: Catalog =
+            serde_json::from_str(include_str!("localization_formats.json")).unwrap();
+        assert!(
+            source.len() > 500,
+            "measure the complete result-template registry"
+        );
+        let fields = regex::Regex::new(r"\{\{|\}\}|\{[^{}]*\}").unwrap();
+        let tokens = |text: &str| {
+            let mut tokens: Vec<_> = fields
+                .find_iter(text)
+                .map(|field| field.as_str().to_owned())
+                .collect();
+            tokens.sort();
+            tokens
+        };
+        for (locale, catalog) in TRANSLATIONS.iter() {
+            for (key, template) in &source {
+                assert_eq!(
+                    tokens(template),
+                    tokens(&catalog[key]),
+                    "{locale} changed formatting specifications in {key}"
+                );
+            }
         }
     }
 
