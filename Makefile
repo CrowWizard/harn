@@ -886,6 +886,7 @@ test-pr-gate-post-warm-integrations: test-rust-lint-lane-cache
 	$(MAKE) test-sccache-rustc-wrapper
 	$(MAKE) test-cargo-wrapper-refresh-native
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/publish_script_test.sh
+	HARN_BIN="$(HARN_BIN)" node --test scripts/tests/development_runtime_workflow_test.mjs
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/ci_preemption_recover_test.sh
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/check_harn_syntax_sensitive_scans_performance_test.sh
 	HARN_BIN="$(HARN_BIN)" bash ./scripts/tests/test_case_performance_evidence_test.sh
