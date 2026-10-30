@@ -23,7 +23,7 @@ mod side_effect_ceiling;
 mod structured_tool_result;
 pub(crate) mod tool_catalog;
 mod tool_parse_diagnostics;
-mod tool_tape;
+pub(crate) mod tool_tape;
 pub(crate) use tool_tape::host_agent_dispatch_tool_call;
 pub(crate) mod tool_result_budget;
 mod undispatched_tool;

@@ -1,6 +1,36 @@
 use super::*;
 use crate::value::VmDictExt;
 
+/// Snapshot a replay target only when the canonical writer can mutate it.
+pub(crate) fn replay_transcript_snapshot(id: &str) -> Result<VmValue, String> {
+    SESSIONS.with(|sessions| {
+        let sessions = sessions.borrow();
+        let state = sessions
+            .get(id)
+            .ok_or_else(|| format!("recorded transcript target session `{id}` is not open"))?;
+        state.ensure_run_accepts_mutation("replace_transcript")?;
+        Ok(state.transcript.clone())
+    })
+}
+
+/// Apply a served dispatch's change through the transcript writer. A missing
+/// live session refuses; closed ephemeral transcripts are validated separately.
+pub(crate) fn replay_transcript_change(
+    id: &str,
+    fields: &std::collections::BTreeMap<String, crate::testbench::tape::FieldChange>,
+) -> Result<(), String> {
+    SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        let Some(state) = sessions.get_mut(id) else {
+            return Err(format!(
+                "recorded transcript target session `{id}` is not open"
+            ));
+        };
+        let next = crate::run_tape::apply_transcript_change(&state.transcript, fields)?;
+        state.replace_transcript(next)
+    })
+}
+
 /// Append a transcript event to the session without mutating its message list.
 /// Used for orchestration-side lineage events (sub-agent spawn/completion,
 /// workflow hooks, etc.) that should survive persistence and replay without

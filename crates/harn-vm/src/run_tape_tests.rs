@@ -2,6 +2,15 @@ use super::*;
 use crate::value::VmValue;
 use harn_builtin_meta::{EffectAccess, EffectKind, EffectSpec};
 
+#[path = "run_tape_prompt_locations_tests.rs"]
+mod prompt_locations;
+
+#[path = "run_tape_overlap_tests.rs"]
+mod overlap;
+
+#[path = "run_tape_session_reset_tests.rs"]
+mod session_reset;
+
 /// Every test that touches the process tape or branch holds this lock: both
 /// are process-global by design.
 static PROCESS_LOCK: Mutex<()> = Mutex::new(());
@@ -51,10 +60,48 @@ fn record_full(dir: &Path) -> RunTapeGuard {
     let workspace = TapeWorkspace {
         root: dir.to_path_buf(),
         observer: Box::new(FixedObserver),
+        state_roots: Vec::new(),
     };
     start_recording(dir, RecordingLevel::Full, Some(workspace))
         .unwrap()
         .unwrap()
+}
+
+#[test]
+fn version_four_transcripts_remain_readable_without_claiming_lifecycle_evidence() {
+    let _lock = PROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let guard = record_full(dir.path());
+    let legacy = serde_json::json!({
+        "session_id": "legacy-session",
+        "fields": {"messages": {"append": [{"role": "user", "content": "legacy"}]}}
+    });
+    let change: TranscriptChange = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&change).unwrap(), legacy);
+    let mut recording =
+        begin_tool_call("legacy-tool", "read", &serde_json::json!({}), true).unwrap();
+    recording.transcript_changes.push(change.clone());
+    finish_tool_call(recording, Ok(ok(serde_json::json!("read"))));
+    drop(guard);
+    let path = dir.path().join(TAPE_FILE_NAME);
+    let mut tape = EventTape::load(&path).unwrap();
+    tape.header.version = 4;
+    tape.persist(&path).unwrap();
+    let loaded = EventTape::load(&path).expect("format four remains inspectable");
+    assert!(loaded.records.iter().any(|record| {
+        matches!(&record.kind, TapeRecordKind::ToolCall { transcript_changes, .. } if transcript_changes == &[change.clone()])
+    }));
+    let result = start_branch(BranchPlan {
+        tape: loaded,
+        live_after_calls: 1,
+        workspace_root: dir.path().to_path_buf(),
+        state_root: dir.path().join("branch-state"),
+        host_state_roots: Vec::new(),
+    });
+    let Err(error) = result else {
+        panic!("old recording cannot claim lifecycle evidence")
+    };
+    assert!(error.contains("session lifecycle"), "{error}");
 }
 
 /// A branch entered on this thread for the life of the value.
@@ -80,6 +127,7 @@ fn branch(dir: &Path, k: u64, workspace: &Path) -> TestBranch {
         live_after_calls: k,
         workspace_root: workspace.to_path_buf(),
         state_root: state.path().join("branch"),
+        host_state_roots: Vec::new(),
     })
     .unwrap();
     let _scope = guard.scope().enter();
@@ -183,6 +231,7 @@ fn full_run_tape_redacts_prompt_llm_tool_transcript_and_cache_secrets() {
         Some(TapeWorkspace {
             root: tape_dir.clone(),
             observer: Box::new(SecretEffectObserver),
+            state_roots: Vec::new(),
         }),
     )
     .unwrap()
@@ -197,6 +246,7 @@ fn full_run_tape_redacts_prompt_llm_tool_transcript_and_cache_secrets() {
         bound_value: Some(text.clone()),
         parent_span: None,
         template_uri: "prompt://fixture".to_string(),
+        template_revision: blake3::hash(text.as_bytes()).to_hex().to_string(),
     };
     let span = crate::stdlib::template::PromptSourceSpan {
         parent_span: Some(Box::new(parent.clone())),
@@ -206,7 +256,7 @@ fn full_run_tape_redacts_prompt_llm_tool_transcript_and_cache_secrets() {
     record_llm_call(&request(&text), &result(&text, None));
     let mut recording = begin_tool_call("secret-tool", "write", &serde_json::json!({}), false)
         .expect("active tape recording");
-    recording.transcript_changes.push(TranscriptChange {
+    recording.transcript_changes.push(TranscriptChange::Fields {
         session_id: "session-1".to_string(),
         fields: BTreeMap::from([(
             "messages".to_string(),
@@ -256,6 +306,7 @@ fn full_run_tape_redacts_prompt_llm_tool_transcript_and_cache_secrets() {
         live_after_calls: 1,
         workspace_root: tmp.path().join("branch"),
         state_root: tmp.path().join("branch-state"),
+        host_state_roots: Vec::new(),
     });
     assert!(result
         .err()
@@ -308,6 +359,7 @@ fn a_branch_requires_an_existing_workspace_copy() {
         live_after_calls: 1,
         workspace_root: missing.clone(),
         state_root: tmp.path().join("branch-state"),
+        host_state_roots: Vec::new(),
     });
     assert!(result
         .err()
@@ -454,6 +506,7 @@ fn a_metadata_tape_refuses_to_branch() {
         live_after_calls: 1,
         workspace_root: tmp.path().to_path_buf(),
         state_root: fresh_branch_state(tmp.path()),
+        host_state_roots: Vec::new(),
     })
     .err()
     .unwrap();
@@ -475,6 +528,7 @@ fn a_tape_recorded_without_a_workspace_observer_refuses_to_branch() {
         live_after_calls: 1,
         workspace_root: tmp.path().to_path_buf(),
         state_root: fresh_branch_state(tmp.path()),
+        host_state_roots: Vec::new(),
     })
     .err()
     .unwrap();
@@ -528,6 +582,52 @@ fn a_run_that_ends_before_its_prefix_is_consumed_diverges() {
     serve_llm_call(&request("first")).unwrap().unwrap();
     let divergence = skipped.finish().divergence.unwrap();
     assert!(divergence.detail.contains("`write` call t1 was never made"));
+}
+
+#[test]
+fn an_unconsumed_prefix_cannot_start_live_inference() {
+    let _lock = PROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    record_run(tmp.path());
+    let skipped = branch(tmp.path(), 1, &tmp.path().join("branch"));
+    serve_llm_call(&request("first")).unwrap().unwrap();
+    let error = serve_llm_call(&request("second"))
+        .expect("an incomplete prefix must not reach a provider")
+        .unwrap_err();
+    assert!(error.to_string().contains("`write` call t1 was never made"));
+    assert_eq!(skipped.report().live_calls, 0);
+    assert!(serve_llm_call(&request("third")).unwrap().is_err());
+    assert_eq!(skipped.report().live_calls, 0);
+}
+
+#[test]
+fn a_tool_with_nested_inference_is_refused_before_applying_its_effects() {
+    let _lock = PROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let args = serde_json::json!({"path": "src/t1.txt"});
+    {
+        let _guard = record_full(tmp.path());
+        record_llm_call(&request("first"), &result("calling", Some("t1")));
+        let tool = begin_tool_call("t1", "write", &args, false).unwrap();
+        record_llm_call(&request("nested"), &result("nested result", None));
+        finish_tool_call(tool, Ok(ok(serde_json::json!("done"))));
+    }
+    let workspace = tmp.path().join("branch");
+    let replay = branch(tmp.path(), 1, &workspace);
+    serve_llm_call(&request("first")).unwrap().unwrap();
+    assert!(matches!(
+        serve_tool_call("t1", "write", &args),
+        ToolServe::Diverged(_)
+    ));
+    assert!(replay
+        .report()
+        .divergence
+        .unwrap()
+        .detail
+        .contains("nested inference"));
+    assert!(!workspace.join("src/t1.txt").exists());
+    assert!(serve_llm_call(&request("continuation")).unwrap().is_err());
+    assert_eq!(replay.report().live_calls, 0);
 }
 
 #[test]
@@ -732,6 +832,7 @@ fn a_write_after_the_branch_ends_stays_out_of_the_recording() {
         live_after_calls: 1,
         workspace_root: tmp.path().to_path_buf(),
         state_root: state.path().join("branch"),
+        host_state_roots: Vec::new(),
     })
     .unwrap();
     let scope = guard.scope();

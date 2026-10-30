@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 /// A fresh session id. Taped, so a branch prefix replays the recorded id and
 /// later calls naming the session still find it.
-pub(super) fn minted_session_id() -> String {
+pub fn minted_session_id() -> String {
     crate::run_tape::taped_random("session_id", || uuid::Uuid::now_v7().to_string())
 }
 

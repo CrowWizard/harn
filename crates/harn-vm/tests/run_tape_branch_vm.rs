@@ -19,6 +19,18 @@ use harn_vm::value::VmError;
 /// Recording and branch replay are process-global.
 static SERIAL: Mutex<()> = Mutex::new(());
 
+#[path = "run_tape_branch_vm/host_roots.rs"]
+mod host_roots;
+
+#[path = "run_tape_branch_vm/first_call.rs"]
+mod first_call;
+
+#[path = "run_tape_branch_vm/workspace.rs"]
+mod workspace;
+
+#[path = "run_tape_branch_vm/review_cases.rs"]
+mod review_cases;
+
 /// Records no file changes: every effect these scripts make lives outside the
 /// workspace, so a served tool call has nothing to re-apply.
 struct NoChanges;
@@ -70,8 +82,23 @@ fn leave_run() {
 
 /// Run `source` inside `branch`, when there is one.
 fn run_in(source: &str, workspace: &Path, branch: Option<BranchScope>) -> Result<String, String> {
+    run_at(
+        source,
+        workspace,
+        branch,
+        workspace.parent().expect("workspace has a parent"),
+    )
+}
+
+fn run_at(
+    source: &str,
+    workspace: &Path,
+    branch: Option<BranchScope>,
+    root: &Path,
+) -> Result<String, String> {
     let source = source.to_string();
     let workspace = workspace.to_path_buf();
+    let root = root.to_path_buf();
     harn_vm::on_vm_stack(move || {
         harn_vm::reset_thread_local_state();
         let chunk = harn_vm::compile_source(&source)?;
@@ -82,8 +109,7 @@ fn run_in(source: &str, workspace: &Path, branch: Option<BranchScope>) -> Result
         let body = async move {
             // The run's write jail is the temp root holding the workspace and
             // the markers, not the test binary's cwd.
-            let root = workspace.parent().expect("workspace has a parent");
-            enter_run(root);
+            enter_run(&root);
             let mut vm = harn_vm::new_vm();
             harn_runtime::register_vm_stdlib(&mut vm);
             harn_vm::register_store_builtins(&mut vm, &workspace);
@@ -105,9 +131,19 @@ fn run_in(source: &str, workspace: &Path, branch: Option<BranchScope>) -> Result
 }
 
 fn record(source: &str, tapes: &Path, workspace: &Path) -> String {
+    record_with_roots(source, tapes, workspace, Vec::new())
+}
+
+fn record_with_roots(
+    source: &str,
+    tapes: &Path,
+    workspace: &Path,
+    state_roots: Vec<PathBuf>,
+) -> String {
     let workspace_tape = TapeWorkspace {
         root: workspace.to_path_buf(),
         observer: Box::new(NoChanges),
+        state_roots,
     };
     let guard = start_recording(tapes, RecordingLevel::Full, Some(workspace_tape))
         .unwrap()
@@ -159,6 +195,16 @@ struct Branched {
 }
 
 fn branch(source: &str, tapes: &Path, workspace: &Path, k: u64) -> Branched {
+    branch_with_roots(source, tapes, workspace, k, Vec::new())
+}
+
+fn branch_with_roots(
+    source: &str,
+    tapes: &Path,
+    workspace: &Path,
+    k: u64,
+    host_state_roots: Vec<PathBuf>,
+) -> Branched {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let state = workspace
@@ -171,6 +217,7 @@ fn branch(source: &str, tapes: &Path, workspace: &Path, k: u64) -> Branched {
         live_after_calls: k,
         workspace_root: workspace.to_path_buf(),
         state_root: state.clone(),
+        host_state_roots,
     })
     .unwrap();
     let output = run_in(source, workspace, Some(guard.scope()));
@@ -470,7 +517,7 @@ fn a_branch_live_tail_continues_the_mock_script_after_the_served_prefix() {
 }
 
 #[test]
-fn a_script_level_exec_in_the_prefix_is_refused_not_run() {
+fn a_script_level_exec_in_the_prefix_is_served_not_run() {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -512,15 +559,32 @@ pipeline main(harness: Harness, task: unknown) {{
     remove_marker(&exec_marker, &dirs.tapes);
 
     let Branched { output, report, .. } = branch(&source, &dirs.tapes, &dirs.workspace, 1);
-    assert!(output.is_err(), "a refused exec fails the run: {output:?}");
+    assert!(
+        output
+            .as_ref()
+            .is_ok_and(|output| output.contains("[harn] done")),
+        "{output:?}"
+    );
     assert!(
         !exec_marker.exists(),
         "the branch ran the script-level exec"
     );
-    assert_eq!(report.served_calls, 0, "report: {report:?}");
-    let divergence = report.divergence.expect("the refusal is the divergence");
-    assert_eq!(divergence.what, "refused effect", "{divergence:?}");
-    assert_eq!(divergence.call, 1, "the refusal came before model call 1");
+    assert_eq!(report.served_calls, 1, "report: {report:?}");
+    assert_eq!(report.served_tool_calls, 1, "report: {report:?}");
+    assert_eq!(report.divergence, None, "report: {report:?}");
+
+    let other_marker = dirs.markers.join("unrecorded-exec");
+    let changed = source.replace(&quote(&exec_marker), &quote(&other_marker));
+    let Branched { output, report, .. } = branch(&changed, &dirs.tapes, &dirs.workspace, 1);
+    assert!(
+        output.is_err(),
+        "an unrecorded command must fail: {output:?}"
+    );
+    assert!(!other_marker.exists());
+    let divergence = report.divergence.expect("an unrecorded command diverges");
+    assert_eq!(divergence.what, "tool call");
+    assert!(divergence.detail.contains("process:process.exec"));
+    assert_eq!(report.live_calls, 0);
 }
 
 /// One `mark` tool call, then done, with a post-turn session reset.
@@ -641,6 +705,7 @@ fn a_branch_refuses_the_recordings_state_root() {
         live_after_calls: 1,
         workspace_root: dirs.workspace.clone(),
         state_root: recording_state(&dirs.workspace),
+        host_state_roots: Vec::new(),
     })
     .err()
     .expect("the recording's state root is refused");
@@ -656,6 +721,7 @@ fn a_branch_refuses_the_recordings_state_root() {
             live_after_calls: 1,
             workspace_root: dirs.workspace.clone(),
             state_root: state_root.clone(),
+            host_state_roots: Vec::new(),
         })
         .err()
         .unwrap_or_else(|| panic!("{} is refused", state_root.display()));
@@ -824,39 +890,6 @@ fn an_explicit_session_root_inside_the_recording_lands_in_the_branch() {
     }
 }
 
-/// A session store named outside every tree the recording owns is an effect
-/// outside the branch: the prefix refuses it with a named divergence and the
-/// store keeps what the recording left.
-#[test]
-fn an_explicit_session_root_outside_the_recording_is_refused_in_the_prefix() {
-    let _serial = SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let dirs = dirs();
-    let hook_marker = dirs.markers.join("hook-marker");
-    let exec_marker = dirs.markers.join("exec-marker");
-    let elsewhere = dirs.workspace.parent().unwrap().join("elsewhere");
-    let source = rooted_reset_script(&hook_marker, &exec_marker, &elsewhere);
-    record(&source, &dirs.tapes, &dirs.workspace);
-    assert_eq!(durable_resets(&elsewhere), 2, "one reset per turn");
-    let Branched { output, report, .. } = branch(&source, &dirs.tapes, &dirs.workspace, 2);
-    assert!(output.is_err(), "the refused write fails the run");
-    let divergence = report.divergence.expect("the prefix diverged");
-    assert_eq!(
-        divergence.what, "durable state outside the branch",
-        "{divergence:?}"
-    );
-    assert!(
-        divergence.detail.contains("session store"),
-        "{divergence:?}"
-    );
-    assert_eq!(
-        durable_resets(&elsewhere),
-        2,
-        "the branch wrote outside itself"
-    );
-}
-
 /// The newest event on every topic of `log`.
 async fn log_heads(log: &harn_vm::event_log::AnyEventLog) -> Vec<String> {
     use harn_vm::event_log::EventLog;
@@ -908,6 +941,7 @@ fn state_built_before_the_branch_is_armed_stays_out_of_the_recording() {
         live_after_calls: 2,
         workspace_root: dirs.workspace.clone(),
         state_root: state.clone(),
+        host_state_roots: Vec::new(),
     };
     let workspace = dirs.workspace;
     let (output, report, before, after) = harn_vm::on_vm_stack(move || {
@@ -1012,6 +1046,7 @@ pipeline main(harness: Harness, task: unknown) {{
         live_after_calls: 2,
         workspace_root: dirs.workspace.clone(),
         state_root: state.clone(),
+        host_state_roots: Vec::new(),
     })
     .unwrap();
     let scope = guard.scope();
@@ -1122,7 +1157,7 @@ pipeline main(harness: Harness, task: unknown) {{
 }
 
 /// Record `source`, then branch it at K=1: the spawned task must belong to the
-/// branch, so its exec is refused rather than run and its store write never
+/// branch, so its exec is served rather than run and its store write never
 /// reaches the recording's store.
 fn assert_spawned_task_stays_in_the_branch(source: &str, marker: &Path) {
     let dirs = dirs();
@@ -1142,10 +1177,14 @@ fn assert_spawned_task_stays_in_the_branch(source: &str, marker: &Path) {
         !marker.exists(),
         "the branch re-ran a spawned task's exec: {output:?}"
     );
-    let divergence = report
-        .divergence
-        .expect("the refused exec is the divergence");
-    assert_eq!(divergence.what, "refused effect", "{divergence:?}");
+    assert!(
+        output
+            .as_ref()
+            .is_ok_and(|output| output.contains("[harn] done")),
+        "{output:?}"
+    );
+    assert_eq!(report.divergence, None, "{report:?}");
+    assert_eq!(report.served_tool_calls, 1, "{report:?}");
     assert_eq!(
         std::fs::read_to_string(harn_vm::runtime_paths::store_path(&dirs.workspace)).unwrap(),
         recorded_store,
@@ -1289,6 +1328,7 @@ fn a_session_store_named_after_the_branch_starts_lands_in_the_branch() {
         live_after_calls: 1,
         workspace_root: dirs.workspace.clone(),
         state_root: state.clone(),
+        host_state_roots: Vec::new(),
     })
     .unwrap();
     // SAFETY: tests here hold SERIAL, so no other thread reads the env.

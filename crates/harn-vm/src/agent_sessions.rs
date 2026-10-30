@@ -68,10 +68,8 @@ pub use subscribers::{append_subscriber, subscriber_count, subscribers_for, Sess
 const LIVE_CLIENT_EVENT_KIND: &str = "live_session_client";
 const LIVE_CLIENT_PERMISSION_EVENT_KIND: &str = "live_session_permission_route";
 
-/// Default cap on concurrent sessions per VM execution tree. At the ceiling,
-/// the least-recently-accessed idle session is evicted on the next `open`.
-/// Live journals and retained host sessions are protected; creation fails if preserving
-/// them leaves no room.
+/// Per-tree session cap. Opening evicts the oldest idle session, or refuses
+/// when live journals and retained host sessions leave no room.
 pub const DEFAULT_SESSION_CAP: usize = RuntimeLimits::DEFAULT.max_agent_sessions;
 
 /// Default cap on retained prompt-visible messages per session. The
@@ -194,6 +192,7 @@ enum SessionAdmissionRole {
 
 pub struct SessionState {
     admission_role: SessionAdmissionRole,
+    transcript_recording_ready: bool,
     retention: Arc<()>,
     pub id: String,
     pub transcript: VmValue,
@@ -365,9 +364,9 @@ use metadata::{
     branch_event_index, clone_transcript_with_id, clone_transcript_with_parent, empty_transcript,
     prepare_lineage_update, session_snapshot, transcript_with_session_metadata, update_lineage,
 };
-use retention::minted_session_id;
 pub use retention::{
-    fork, open_or_create_with_actor_chain, open_retained_with_actor_chain, SessionRetention,
+    fork, minted_session_id, open_or_create_with_actor_chain, open_retained_with_actor_chain,
+    SessionRetention,
 };
 #[cfg(test)]
 pub(crate) use runtime_store::fresh_session_runtime;
@@ -382,7 +381,10 @@ use runtime_store::{
 pub use scratchpad::*;
 pub(crate) use transcript_lifecycle::settle_assistant_publication;
 pub use transcript_lifecycle::*;
-pub(crate) use transcript_lifecycle::{append_event_to_state, canonical_prompt_snapshot};
+pub(crate) use transcript_lifecycle::{
+    append_event_to_state, canonical_prompt_snapshot, replay_transcript_change,
+    replay_transcript_snapshot,
+};
 pub use types::*;
 pub use workspace_roots::{PreparedWorkspaceRoots, WorkspaceRootsError};
 
@@ -517,6 +519,7 @@ pub fn set_transcript_budget_policy(
 
 /// Clear the calling thread's session store and its process-global sidecars.
 pub fn reset_session_store() {
+    crate::run_tape::note_session_store_reset();
     let retired = SESSIONS.with(|s| retire_all_session_states(&mut s.borrow_mut()));
     let mut owned_session_ids: HashSet<String> = retired
         .into_iter()
@@ -693,22 +696,6 @@ pub fn exists(id: &str) -> bool {
     SESSIONS.with(|s| s.borrow().contains_key(id))
 }
 
-/// Apply a transcript change a served tool dispatch recorded, through the
-/// one transcript writer. A session that no longer exists is skipped.
-pub(crate) fn replay_transcript_change(
-    id: &str,
-    fields: &std::collections::BTreeMap<String, crate::testbench::tape::FieldChange>,
-) -> Result<(), String> {
-    SESSIONS.with(|s| {
-        let mut map = s.borrow_mut();
-        let Some(state) = map.get_mut(id) else {
-            return Ok(());
-        };
-        let next = crate::run_tape::apply_transcript_change(&state.transcript, fields)?;
-        state.replace_transcript(next)
-    })
-}
-
 pub fn length(id: &str) -> Option<usize> {
     SESSIONS.with(|s| {
         s.borrow().get(id).map(|state| {
@@ -839,7 +826,7 @@ fn open_with_retention(
         if retain {
             retention = Some(SessionRetention::for_state(&state));
         }
-        map.insert(resolved.clone(), state);
+        state.insert_into(&mut map);
         Ok(())
     })?;
     for retired in evicted {
@@ -946,13 +933,13 @@ fn admit_linked_sessions(
             let mut parent = SessionState::new(parent_id.to_string());
             parent.admission_role = SessionAdmissionRole::ParentReference;
             parent.actor_chain = inherited_actor_chain.clone();
-            map.insert(parent_id.to_string(), parent);
+            parent.insert_into(&mut map);
             created.push(parent_id.to_string());
         }
         if !map.contains_key(child_id) {
             let mut child = SessionState::new(child_id.to_string());
             child.actor_chain = child_actor_chain.clone();
-            map.insert(child_id.to_string(), child);
+            child.insert_into(&mut map);
             created.push(child_id.to_string());
         } else if let Some(actor_chain) = requested_child_actor_chain {
             if let Some(child) = map.get_mut(child_id) {
@@ -1207,7 +1194,7 @@ fn fork_with_retention(
         if retain {
             retention = Some(SessionRetention::for_state(&state));
         }
-        map.insert(dst.clone(), state);
+        state.insert_into(&mut map);
         map.get_mut(src_id)
             .expect("fork source remains protected during atomic admission")
             .touch();
