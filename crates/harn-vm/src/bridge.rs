@@ -1093,12 +1093,9 @@ impl HostBridge {
         &self,
         params: &serde_json::Value,
     ) -> Result<String, String> {
-        let reminder = queued_session_remind_from_params(params)?;
-        let reminder_id = reminder.reminder.id.clone();
         self.queued_transcript_injections
-            .push_session_reminder(reminder)
-            .await;
-        Ok(reminder_id)
+            .push_queued_session_remind_from_params(params)
+            .await
     }
 
     pub async fn take_queued_user_messages(
