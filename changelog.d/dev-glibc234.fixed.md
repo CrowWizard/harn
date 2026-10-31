@@ -1,1 +1,4 @@
-- **Linux dev artifacts target glibc 2.34.** The dev build compiles in a pinned manylinux 2.34 container, uses a separate Rust cache namespace, rejects newer GLIBC symbol requirements, and smoke-tests the binary in the same environment before uploading it.
+- **Linux dev artifacts target glibc 2.34.** The dev build compiles in a
+  pinned manylinux 2.34 container, uses a separate Rust cache namespace,
+  rejects newer GLIBC symbol requirements, and smoke-tests the binary in the
+  same environment before uploading it.

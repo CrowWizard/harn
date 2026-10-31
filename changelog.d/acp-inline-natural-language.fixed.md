@@ -1,1 +1,4 @@
-- **ACP inline prompts now run as agent tasks.** Natural-language `session/prompt` text is passed to the tool-aware `agent_loop` instead of being parsed as Harn source; use `--pipeline` when a session should execute a Harn pipeline.
+- **ACP inline prompts now run as agent tasks.** Natural-language
+  `session/prompt` text is passed to the tool-aware `agent_loop` instead of
+  being parsed as Harn source; use `--pipeline` when a session should execute
+  a Harn pipeline.
