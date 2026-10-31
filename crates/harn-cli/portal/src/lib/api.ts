@@ -1,3 +1,4 @@
+import { portalText } from "../i18n/portalText"
 import type {
   PortalHighlightKeywords,
   PortalCostReport,
@@ -8,7 +9,6 @@ import type {
   PortalLaunchJobList,
   PortalLlmOptions,
   PortalMeta,
-  PersonaManifestSummary,
   PersonaStatus,
   PortalLaunchTargetList,
   PortalListResponse,
@@ -27,7 +27,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 async function responseErrorMessage(response: Response): Promise<string> {
-  let message = `Request failed: ${response.status}`
+  let message = portalText("Request failed: {status}", { status: response.status })
   try {
     const payload = (await response.json()) as { error?: string }
     if (payload.error) {
@@ -76,10 +76,6 @@ export function fetchRuns(params?: {
 
 export function fetchPortalMeta(): Promise<PortalMeta> {
   return fetchJson<PortalMeta>("/api/meta")
-}
-
-export function fetchPersonas(): Promise<PersonaManifestSummary[]> {
-  return fetchJson<PersonaManifestSummary[]>("/api/personas")
 }
 
 export function fetchPersonaStatus(name: string, at?: string): Promise<PersonaStatus> {

@@ -83,33 +83,33 @@ otel = [
 testbench-wasi = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wat", "dep:tempfile"]
 
 [dependencies]
-harn-vm-core = { path = "../harn-vm-core", version = "=0.10.181" }
-harn-llm = { path = "../harn-llm", version = "=0.10.181" }
-harn-orchestration = { path = "../harn-orchestration", version = "=0.10.181" }
-harn-builtin-meta = { path = "../harn-builtin-meta", version = "=0.10.181" }
-harn-builtin-registry = { path = "../harn-builtin-registry", version = "=0.10.181" }
-harn-capability-contracts = { path = "../harn-capability-contracts", version = "=0.10.181" }
-harn-builtin-macros = { path = "../harn-builtin-macros", version = "=0.10.181" }
+harn-vm-core = { path = "../harn-vm-core", version = "=0.10.183" }
+harn-llm = { path = "../harn-llm", version = "=0.10.183" }
+harn-orchestration = { path = "../harn-orchestration", version = "=0.10.183" }
+harn-builtin-meta = { path = "../harn-builtin-meta", version = "=0.10.183" }
+harn-builtin-registry = { path = "../harn-builtin-registry", version = "=0.10.183" }
+harn-capability-contracts = { path = "../harn-capability-contracts", version = "=0.10.183" }
+harn-builtin-macros = { path = "../harn-builtin-macros", version = "=0.10.183" }
 parking_lot = "0.12"
 pin-project-lite = "0.2"
-harn-clock = { path = "../harn-clock", version = "=0.10.181" }
-harn-provider-catalog = { path = "../harn-provider-catalog", version = "=0.10.181" }
-harn-execution-policy = { path = "../harn-execution-policy", version = "=0.10.181" }
-harn-prompt-syntax = { path = "../harn-prompt-syntax", version = "=0.10.181" }
-harn-flock = { path = "../harn-flock", version = "=0.10.181" }
-harn-signals = { path = "../harn-signals", version = "=0.10.181" }
-harn-glob = { path = "../harn-glob", version = "=0.10.181" }
-harn-languages = { path = "../harn-languages", version = "=0.10.181" }
-harn-session-store = { path = "../harn-session-store", version = "=0.10.181" }
-harn-sqlite = { path = "../harn-sqlite", version = "=0.10.181" }
-harn-ir = { path = "../harn-ir", version = "=0.10.181" }
-harn-kernel = { path = "../harn-kernel", version = "=0.10.181" }
-harn-lexer = { path = "../harn-lexer", version = "=0.10.181" }
-harn-modules = { path = "../harn-modules", version = "=0.10.181" }
-harn-parser = { path = "../harn-parser", version = "=0.10.181" }
-harn-stdlib-catalog = { path = "../harn-stdlib-catalog", version = "=0.10.181" }
+harn-clock = { path = "../harn-clock", version = "=0.10.183" }
+harn-provider-catalog = { path = "../harn-provider-catalog", version = "=0.10.183" }
+harn-execution-policy = { path = "../harn-execution-policy", version = "=0.10.183" }
+harn-prompt-syntax = { path = "../harn-prompt-syntax", version = "=0.10.183" }
+harn-flock = { path = "../harn-flock", version = "=0.10.183" }
+harn-signals = { path = "../harn-signals", version = "=0.10.183" }
+harn-glob = { path = "../harn-glob", version = "=0.10.183" }
+harn-languages = { path = "../harn-languages", version = "=0.10.183" }
+harn-session-store = { path = "../harn-session-store", version = "=0.10.183" }
+harn-sqlite = { path = "../harn-sqlite", version = "=0.10.183" }
+harn-ir = { path = "../harn-ir", version = "=0.10.183" }
+harn-kernel = { path = "../harn-kernel", version = "=0.10.183" }
+harn-lexer = { path = "../harn-lexer", version = "=0.10.183" }
+harn-modules = { path = "../harn-modules", version = "=0.10.183" }
+harn-parser = { path = "../harn-parser", version = "=0.10.183" }
+harn-stdlib-catalog = { path = "../harn-stdlib-catalog", version = "=0.10.183" }
 async-trait = "0.1"
-aws-config = { package = "harn-aws-config", path = "../harn-aws-config", version = "=0.10.181", optional = true }
+aws-config = { package = "harn-aws-config", path = "../harn-aws-config", version = "=0.10.183", optional = true }
 aws-credential-types = { version = "1.3.0", optional = true }
 aws-sigv4 = { version = "1.5.1", optional = true }
 # Smithy JSON 0.63 cannot compile against the Document API in types 1.7.
@@ -162,6 +162,7 @@ data-encoding = "2"
 ed25519-dalek = { version = "3", features = ["pem", "pkcs8", "rand_core"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 hex = "0.4"
+percent-encoding = "2.3"
 hmac = "0.13"
 sha1 = "0.11"
 sha2 = "0.11"
@@ -173,7 +174,7 @@ shell-words = "1.1"
 # policy adds no parallel parser. Kernel child confinement remains the
 # security boundary.
 tree-sitter = "0.27"
-harn-grammars = { path = "../harn-grammars", version = "=0.10.181", default-features = false, features = ["bash", "powershell"] }
+harn-grammars = { path = "../harn-grammars", version = "=0.10.183", default-features = false, features = ["bash", "powershell"] }
 strsim = "0.11"
 # On-demand native stack growth for recursive walks over arbitrarily deep
 # `VmValue` trees (display, equality, ordering, hashing, JSON). Same approach
@@ -220,8 +221,8 @@ zeroize = "1"
 zstd = "0.14.0"
 tar = { version = "0.4.46", default-features = false }
 x509-parser = "0.18.1"
-wasmtime = { version = "48", optional = true, default-features = false, features = ["cranelift", "runtime"] }
-wasmtime-wasi = { version = "48", optional = true, default-features = false, features = ["p1"] }
+wasmtime = { version = "48.0.8", optional = true, default-features = false, features = ["cranelift", "runtime"] }
+wasmtime-wasi = { version = "48.0.8", optional = true, default-features = false, features = ["p1"] }
 wat = { version = "1", optional = true }
 tempfile = { version = "3", optional = true }
 wait-timeout = "0.2"
@@ -266,13 +267,13 @@ zbus = { version = "5.17", default-features = false, features = ["async-io"], op
 # the harn-runtime -> harn-vm edge acyclic for crates.io.
 harn-runtime = { path = "../harn-runtime", features = ["full"] }
 rstest.workspace = true
-harn-orchestration = { path = "../harn-orchestration", version = "=0.10.181", features = ["test-support"] }
-harn-llm = { path = "../harn-llm", version = "=0.10.181", features = ["test-support"] }
-harn-vm-core = { path = "../harn-vm-core", version = "=0.10.181", features = ["vm-test-support"] }
+harn-orchestration = { path = "../harn-orchestration", version = "=0.10.183", features = ["test-support"] }
+harn-llm = { path = "../harn-llm", version = "=0.10.183", features = ["test-support"] }
+harn-vm-core = { path = "../harn-vm-core", version = "=0.10.183", features = ["vm-test-support"] }
 criterion = "0.8"
-harn-clock = { path = "../harn-clock", version = "=0.10.181", features = ["test-support"] }
-harn-modules = { path = "../harn-modules", version = "=0.10.181", features = ["bundled-stdlib"] }
-harn-stdlib = { path = "../harn-stdlib", version = "=0.10.181" }
+harn-clock = { path = "../harn-clock", version = "=0.10.183", features = ["test-support"] }
+harn-modules = { path = "../harn-modules", version = "=0.10.183", features = ["bundled-stdlib"] }
+harn-stdlib = { path = "../harn-stdlib", version = "=0.10.183" }
 http = "1"
 proptest = "1"
 static_assertions = "1.1"

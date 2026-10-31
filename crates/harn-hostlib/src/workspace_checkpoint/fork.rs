@@ -1,6 +1,7 @@
 //! Independent checkpoint history for a conversation fork.
 
 use super::*;
+use serde::Serialize;
 
 /// Result of copying a session's checkpoint history to a fork.
 #[derive(Debug, Serialize)]
@@ -163,7 +164,8 @@ pub(super) fn fork_session_checked(
             boundaries,
             calls,
             pending: HashMap::new(),
-            revision: 0,
+            // Inherited calls keep their invocations; new ones must not reuse them.
+            revision,
         })),
     );
     Ok(Outcome::Ready(receipt))

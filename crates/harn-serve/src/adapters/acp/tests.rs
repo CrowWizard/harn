@@ -14,7 +14,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc;
+mod additional_directories;
+mod client_capabilities;
 mod provider_default_tests;
+mod replay_inputs;
+mod root_projection;
 fn acp_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -135,6 +139,17 @@ async fn start_acp_channel_session_with_params(
 
     request_tx
         .send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {"protocolVersion": 1, "clientCapabilities": {"terminal": true}},
+        }))
+        .expect("advertise test terminal support");
+    assert!(recv_response_with_id(&mut response_rx, 0)
+        .await
+        .get("result")
+        .is_some());
+
+    request_tx
+        .send(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "session/new",
@@ -142,6 +157,7 @@ async fn start_acp_channel_session_with_params(
         }))
         .expect("send session/new");
     let created = recv_json(&mut response_rx).await;
+    assert!(created["result"]["sessionId"].is_string(), "{created}");
     let session_id = created["result"]["sessionId"]
         .as_str()
         .expect("session id")
@@ -951,13 +967,14 @@ fn acp_agent_capabilities_use_canonical_initialize_shape() {
     assert_eq!(
         capabilities["mcpCapabilities"],
         serde_json::json!({
-            "http": true,
-            "sse": true,
+            "http": false,
+            "sse": false,
         })
     );
     assert_eq!(
         capabilities["sessionCapabilities"],
         serde_json::json!({
+            "additionalDirectories": {},
             "close": {},
             "list": {},
             "resume": {},
@@ -1058,9 +1075,11 @@ fn every_session_dispatch_arm_checks_authentication() {
     );
 }
 
+mod batch_verification_stop;
 mod caching;
 mod canonical_fork;
 mod commands;
+mod config_values;
 mod conservative_admission;
 mod emit_response;
 mod event_log_barrier;

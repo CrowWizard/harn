@@ -430,7 +430,7 @@ pub const POST_MERGE_TIER_GUARD = "needs.changes.outputs.post_merge_tier != 'tru
 pub const WINDOWS_CROSS_CHECK_IF =
   "((github.event_name == 'pull_request' || github.event_name == 'merge_group') && "
   + POST_MERGE_TIER_GUARD
-  + ") || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true')"
+  + ") || (needs.changes.outputs.main_full_suite == 'true' && needs.changes.outputs.rust == 'true')"
 
 /** `ci-status` requires the cross-check exactly where the job itself must run. */
 pub const WINDOWS_CROSS_REQUIRED_ENV = "$" + "{{ " + WINDOWS_CROSS_CHECK_IF + " }}"
@@ -551,6 +551,10 @@ pub const WINDOWS_WARM_RESTORE_MARKER = "workspace_warm_artifact.sh windows down
 
 pub const MACOS_WARM_PACK_MARKER = "workspace_warm_artifact.sh macos pack"
 
+pub const MACOS_WARM_PACK_STEP_ID = "macos-warm-pack"
+
+pub const MACOS_WARM_UPLOAD_NAME = "$" + "{{ steps.macos-warm-pack.outputs.artifact_name }}"
+
 pub const MACOS_WARM_RESTORE_MARKER = "workspace_warm_artifact.sh macos download-and-restore"
 
 pub const WINDOWS_WARM_MAIN_GUARD = "$" + "{{ github.ref == 'refs/heads/main' }}"
@@ -559,9 +563,9 @@ pub const WINDOWS_WARM_MAIN_GUARD = "$" + "{{ github.ref == 'refs/heads/main' }}
 pub const MACOS_WARM_MAIN_GUARD = "$"
   + "{{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}"
 
-/** The macOS warm consumer guard on the nightly: pull requests only. */
-pub const MACOS_WARM_PULL_REQUEST_GUARD = "$"
-  + "{{ github.event_name == 'pull_request' }}"
+/** Hosted PR reuse and main's fallback when its exact Actions generation is absent. */
+pub const MACOS_WARM_HOSTED_RESTORE_GUARD = "$"
+  + "{{ github.event_name == 'pull_request' || (github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && steps.rust-cache.outputs.cache-hit != 'true') }}"
 
 pub const WINDOWS_WARM_RELEASE_CERTIFY_GUARD = "$"
   + "{{ startsWith(github.ref_name, 'release-certify/') }}"
@@ -2553,6 +2557,15 @@ fn consumer_observer_descriptor_safe(step: dict) -> bool {
     )
 }
 
+fn consumer_declaration_step_safe(step: dict, declaration: dict?) -> bool {
+  return consumer_declaration_safe(declaration)
+    && step?.name == declaration?.name
+    && step?.id == "observer"
+    && step?.if == "inputs.rehearsal_promotion_run_id == ''"
+    && step?.with == {"source-revision": CONSUMER_CANARY_SOURCE, token: "$" + "{{ github.token }}"}
+    && !keys(step).any({ key -> !["name", "id", "if", "uses", "with"].contains(key) })
+}
+
 fn consumer_action_allowed(step: dict) -> bool {
   const uses = step_uses(step)
   return uses == "" || CONSUMER_CANARY_ACTIONS.any({ prefix -> uses.starts_with(prefix) })
@@ -2611,24 +2624,40 @@ pub fn consumer_canary_errors(
       ]
   }
   const steps = job?.steps ?? []
+  let custody_declared = false
   let custody_before_dispatch = false
   for step in steps {
     const uses = step_uses(step)
     if uses == CONSUMER_DECLARATION_ACTION {
-      const safe = consumer_declaration_safe(declaration)
-        && step?.name == declaration?.name
-        && step?.id == "observer"
-        && step?.if == "inputs.rehearsal_promotion_run_id == ''"
-        && step?.with
-          == {"source-revision": CONSUMER_CANARY_SOURCE, token: "$" + "{{ github.token }}"}
-        && !keys(step).any({ key -> !["name", "id", "if", "uses", "with"].contains(key) })
-      custody_before_dispatch = safe
+      const safe = consumer_declaration_step_safe(step, declaration)
+      custody_declared = safe
       if !safe {
         errors = errors + ["consumer declaration must publish only canonical public custody"]
       }
       continue
     }
     const command = to_string(step?.run ?? "")
+    if command.contains("consumer-observer-declare.mjs --witness") {
+      const dollar = "$"
+      const safe = custody_declared
+        && step
+          == {
+            name:
+              "Confirm consumer observer declaration ${dollar}{{ fromJSON(steps.observer.outputs.context || '{}').dispatch_nonce }}",
+            if: "inputs.rehearsal_promotion_run_id == ''",
+            env: {
+              GH_TOKEN: "${dollar}{{ github.token }}",
+              OBSERVER_CONTEXT: "${dollar}{{ steps.observer.outputs.context }}",
+              SOURCE_REVISION: CONSUMER_CANARY_SOURCE,
+            },
+            run: "node scripts/ci/consumer-observer-declare.mjs --witness",
+          }
+      custody_before_dispatch = safe
+      if !safe {
+        errors = errors
+          + ["consumer publication witness must authenticate its nonce and resolved source"]
+      }
+    }
     if command.contains("consumer_canary.sh")
       && !command.contains("--observe")
       && !command.contains("--decide")

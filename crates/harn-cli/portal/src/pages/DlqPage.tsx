@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { defineMessages, useIntl } from "react-intl"
+import { portalText } from "../i18n/portalText"
 import { useNavigate, useSearchParams } from "react-router"
 
 import {
@@ -11,7 +13,8 @@ import {
   replayDlqBulk,
   replayDlqEntry,
 } from "../lib/api"
-import type { PortalDlqEntry, PortalDlqListResponse, PortalLaunchJob } from "../types"
+import { errorMessage } from "../lib/query"
+import type { PortalDlqEntry, PortalLaunchJob } from "../types"
 
 const ERROR_CLASSES = [
   "provider_5xx",
@@ -28,15 +31,25 @@ const messages = defineMessages({
   title: { id: "portal.dlqPage.title", defaultMessage: "Dead-letter queue" },
   copy: {
     id: "portal.dlqPage.copy",
-    defaultMessage: "Inspect failed trigger deliveries, replay known-good fixes, and purge stale entries.",
+    defaultMessage:
+      "Inspect failed trigger deliveries, replay known-good fixes, and purge stale entries.",
   },
   refresh: { id: "portal.dlqPage.refresh", defaultMessage: "Refresh" },
   filter: { id: "portal.dlqPage.filter", defaultMessage: "Search" },
-  filterPlaceholder: { id: "portal.dlqPage.filterPlaceholder", defaultMessage: "trigger, event, error..." },
+  filterPlaceholder: {
+    id: "portal.dlqPage.filterPlaceholder",
+    defaultMessage: "trigger, event, error...",
+  },
   trigger: { id: "portal.dlqPage.trigger", defaultMessage: "Trigger" },
   provider: { id: "portal.dlqPage.provider", defaultMessage: "Provider" },
-  errorClass: { id: "portal.dlqPage.errorClass", defaultMessage: "Error class" },
-  allClasses: { id: "portal.dlqPage.allClasses", defaultMessage: "All classes" },
+  errorClass: {
+    id: "portal.dlqPage.errorClass",
+    defaultMessage: "Error class",
+  },
+  allClasses: {
+    id: "portal.dlqPage.allClasses",
+    defaultMessage: "All classes",
+  },
   allStates: { id: "portal.dlqPage.allStates", defaultMessage: "All states" },
   pending: { id: "portal.dlqPage.pending", defaultMessage: "Pending" },
   discarded: { id: "portal.dlqPage.discarded", defaultMessage: "Discarded" },
@@ -44,12 +57,24 @@ const messages = defineMessages({
   since: { id: "portal.dlqPage.since", defaultMessage: "Since" },
   until: { id: "portal.dlqPage.until", defaultMessage: "Until" },
   entries: { id: "portal.dlqPage.entries", defaultMessage: "{count} entries" },
-  replayAll: { id: "portal.dlqPage.replayAll", defaultMessage: "Replay filtered" },
-  purgeOld: { id: "portal.dlqPage.purgeOld", defaultMessage: "Purge old unknown" },
+  replayAll: {
+    id: "portal.dlqPage.replayAll",
+    defaultMessage: "Replay filtered",
+  },
+  purgeOld: {
+    id: "portal.dlqPage.purgeOld",
+    defaultMessage: "Purge old unknown",
+  },
   replay: { id: "portal.dlqPage.replay", defaultMessage: "Replay" },
-  replayDrift: { id: "portal.dlqPage.replayDrift", defaultMessage: "Replay with drift accept" },
+  replayDrift: {
+    id: "portal.dlqPage.replayDrift",
+    defaultMessage: "Replay with drift accept",
+  },
   purge: { id: "portal.dlqPage.purge", defaultMessage: "Purge" },
-  exportFixture: { id: "portal.dlqPage.exportFixture", defaultMessage: "Export fixture" },
+  exportFixture: {
+    id: "portal.dlqPage.exportFixture",
+    defaultMessage: "Export fixture",
+  },
   event: { id: "portal.dlqPage.event", defaultMessage: "Event" },
   failedAt: { id: "portal.dlqPage.failedAt", defaultMessage: "Failed at" },
   retries: { id: "portal.dlqPage.retries", defaultMessage: "Retries" },
@@ -58,12 +83,24 @@ const messages = defineMessages({
   detail: { id: "portal.dlqPage.detail", defaultMessage: "Detail" },
   payload: { id: "portal.dlqPage.payload", defaultMessage: "Payload" },
   headers: { id: "portal.dlqPage.headers", defaultMessage: "Headers" },
-  attempts: { id: "portal.dlqPage.attempts", defaultMessage: "Attempt history" },
-  predicateTrace: { id: "portal.dlqPage.predicateTrace", defaultMessage: "Predicate trace" },
+  attempts: {
+    id: "portal.dlqPage.attempts",
+    defaultMessage: "Attempt history",
+  },
+  predicateTrace: {
+    id: "portal.dlqPage.predicateTrace",
+    defaultMessage: "Predicate trace",
+  },
   groups: { id: "portal.dlqPage.groups", defaultMessage: "Error groups" },
   alerts: { id: "portal.dlqPage.alerts", defaultMessage: "Alerts" },
-  noAlerts: { id: "portal.dlqPage.noAlerts", defaultMessage: "No active DLQ spike alerts." },
-  empty: { id: "portal.dlqPage.empty", defaultMessage: "No DLQ entries match the current filters." },
+  noAlerts: {
+    id: "portal.dlqPage.noAlerts",
+    defaultMessage: "No active DLQ spike alerts.",
+  },
+  empty: {
+    id: "portal.dlqPage.empty",
+    defaultMessage: "No DLQ entries match the current filters.",
+  },
   queued: { id: "portal.dlqPage.queued", defaultMessage: "Queued {label}" },
   bulkDone: {
     id: "portal.dlqPage.bulkDone",
@@ -80,8 +117,12 @@ function toInputDateTime(value: string | null) {
     return ""
   }
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {return ""}
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+  if (Number.isNaN(date.getTime())) {
+    return ""
+  }
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16)
 }
 
 function fromInputDateTime(value: string) {
@@ -92,10 +133,10 @@ export function DlqPage() {
   const intl = useIntl()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [data, setData] = useState<PortalDlqListResponse | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get("entry"))
-  const [loading, setLoading] = useState(false)
-  const [lastError, setLastError] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    searchParams.get("entry"),
+  )
+  const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const jobPollerRef = useRef<number | null>(null)
 
@@ -121,11 +162,10 @@ export function DlqPage() {
     [searchParams],
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setLastError(null)
-    try {
-      const next = await fetchDlq({
+  const dlqQuery = useQuery({
+    queryKey: ["dlq", filters],
+    queryFn: () =>
+      fetchDlq({
         q: filters.q || undefined,
         trigger_id: filters.trigger_id || undefined,
         provider: filters.provider || undefined,
@@ -133,23 +173,18 @@ export function DlqPage() {
         state: filters.state || undefined,
         since: filters.since || undefined,
         until: filters.until || undefined,
-      })
-      setData(next)
-      if (!selectedId && next.entries.length > 0) {
-        setSelectedId(next.entries[0].id)
-      }
-    } catch (error) {
-      setLastError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setLoading(false)
-    }
-  }, [filters, selectedId])
+      }),
+    refetchInterval: 15000,
+  })
+  const data = dlqQuery.data ?? null
+  const loading = dlqQuery.isFetching
+  const lastError = actionError ?? errorMessage(dlqQuery.error)
+  const load = () => dlqQuery.refetch()
 
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  const selected = data?.entries.find((entry) => entry.id === selectedId) ?? data?.entries[0] ?? null
+  const selected =
+    data?.entries.find((entry) => entry.id === selectedId) ??
+    data?.entries[0] ??
+    null
 
   function updateParams(next: Record<string, string | null>) {
     const updated = new URLSearchParams(searchParams)
@@ -169,19 +204,21 @@ export function DlqPage() {
   }
 
   async function runAction(action: () => Promise<void>) {
-    setLastError(null)
+    setActionError(null)
     setNotice(null)
     try {
       await action()
     } catch (error) {
-      setLastError(error instanceof Error ? error.message : String(error))
+      setActionError(errorMessage(error))
     }
   }
 
   function handleJob(job: PortalLaunchJob) {
     setNotice(intl.formatMessage(messages.queued, { label: job.target_label }))
     if (job.discovered_run_paths[0]) {
-      navigate(`/runs/detail?path=${encodeURIComponent(job.discovered_run_paths[0])}`)
+      navigate(
+        `/runs/detail?path=${encodeURIComponent(job.discovered_run_paths[0])}`,
+      )
       return
     }
     if (jobPollerRef.current !== null) {
@@ -214,11 +251,13 @@ export function DlqPage() {
   }
 
   async function runPurge(entry: PortalDlqEntry) {
-    if (!window.confirm(`Purge DLQ entry ${entry.id}?`)) {
+    if (
+      !window.confirm(portalText("Purge DLQ entry {id}?", { id: entry.id }))
+    ) {
       return
     }
     await purgeDlqEntry(entry.id)
-    setNotice(`Purged ${entry.id}`)
+    setNotice(portalText("Purged {id}", { id: entry.id }))
     await load()
   }
 
@@ -228,7 +267,7 @@ export function DlqPage() {
     anchor.href = `data:application/json;charset=utf-8,${encodeURIComponent(pretty(fixture))}`
     anchor.download = `${entry.id}.json`
     anchor.click()
-    setNotice(`Exported ${entry.id}`)
+    setNotice(portalText("Exported {id}", { id: entry.id }))
   }
 
   async function runBulkReplay() {
@@ -250,7 +289,11 @@ export function DlqPage() {
   }
 
   async function runBulkPurgeOldUnknown() {
-    if (!window.confirm("Purge pending unknown DLQ entries older than 30 days?")) {
+    if (
+      !window.confirm(
+        portalText("Purge pending unknown DLQ entries older than 30 days?"),
+      )
+    ) {
       return
     }
     const result = await purgeDlqBulk({
@@ -292,7 +335,9 @@ export function DlqPage() {
             <input
               type="search"
               value={filters.trigger_id}
-              onChange={(event) => updateParams({ trigger_id: event.target.value })}
+              onChange={(event) =>
+                updateParams({ trigger_id: event.target.value })
+              }
             />
           </label>
           <label className="search">
@@ -300,7 +345,9 @@ export function DlqPage() {
             <input
               type="search"
               value={filters.provider}
-              onChange={(event) => updateParams({ provider: event.target.value })}
+              onChange={(event) =>
+                updateParams({ provider: event.target.value })
+              }
             />
           </label>
           <label className="search">
@@ -308,9 +355,13 @@ export function DlqPage() {
             <select
               className="compare-select"
               value={filters.error_class}
-              onChange={(event) => updateParams({ error_class: event.target.value })}
+              onChange={(event) =>
+                updateParams({ error_class: event.target.value })
+              }
             >
-              <option value="">{intl.formatMessage(messages.allClasses)}</option>
+              <option value="">
+                {intl.formatMessage(messages.allClasses)}
+              </option>
               {ERROR_CLASSES.map((errorClass) => (
                 <option key={errorClass} value={errorClass}>
                   {errorClass}
@@ -325,9 +376,15 @@ export function DlqPage() {
               value={filters.state}
               onChange={(event) => updateParams({ state: event.target.value })}
             >
-              <option value="pending">{intl.formatMessage(messages.pending)}</option>
-              <option value="discarded">{intl.formatMessage(messages.discarded)}</option>
-              <option value="all">{intl.formatMessage(messages.allStates)}</option>
+              <option value="pending">
+                {intl.formatMessage(messages.pending)}
+              </option>
+              <option value="discarded">
+                {intl.formatMessage(messages.discarded)}
+              </option>
+              <option value="all">
+                {intl.formatMessage(messages.allStates)}
+              </option>
             </select>
           </label>
           <label className="search">
@@ -335,7 +392,9 @@ export function DlqPage() {
             <input
               type="datetime-local"
               value={toInputDateTime(filters.since)}
-              onChange={(event) => updateParams({ since: fromInputDateTime(event.target.value) })}
+              onChange={(event) =>
+                updateParams({ since: fromInputDateTime(event.target.value) })
+              }
             />
           </label>
           <label className="search">
@@ -343,16 +402,25 @@ export function DlqPage() {
             <input
               type="datetime-local"
               value={toInputDateTime(filters.until)}
-              onChange={(event) => updateParams({ until: fromInputDateTime(event.target.value) })}
+              onChange={(event) =>
+                updateParams({ until: fromInputDateTime(event.target.value) })
+              }
             />
           </label>
-          <button className="action-button" disabled={loading} onClick={() => void load()} type="button">
+          <button
+            className="action-button"
+            disabled={loading}
+            onClick={() => void load()}
+            type="button"
+          >
             {intl.formatMessage(messages.refresh)}
           </button>
         </div>
 
         <div className="runs-meta">
-          <span>{intl.formatMessage(messages.entries, { count: data?.total ?? 0 })}</span>
+          <span>
+            {intl.formatMessage(messages.entries, { count: data?.total ?? 0 })}
+          </span>
           {lastError ? <span>{lastError}</span> : null}
           {notice ? <span>{notice}</span> : null}
         </div>
@@ -373,22 +441,37 @@ export function DlqPage() {
             {data?.alerts.length ? (
               <div className="chip-row">
                 {data.alerts.map((alert) => (
-                  <span className="pill danger" key={`${alert.trigger_id}-${alert.error_class}`}>
-                    {alert.trigger_id} {alert.error_class} {alert.count}/{alert.threshold_entries}
+                  <span
+                    className="pill danger"
+                    key={`${alert.trigger_id}-${alert.error_class}`}
+                  >
+                    {alert.trigger_id} {alert.error_class} {alert.count}/
+                    {alert.threshold_entries}
                   </span>
                 ))}
               </div>
             ) : (
-              <div className="muted">{intl.formatMessage(messages.noAlerts)}</div>
+              <div className="muted">
+                {intl.formatMessage(messages.noAlerts)}
+              </div>
             )}
           </section>
         </div>
 
         <div className="dlq-bulk-bar">
-          <button className="action-button" disabled={!data?.entries.length} onClick={() => void runAction(runBulkReplay)} type="button">
+          <button
+            className="action-button"
+            disabled={!data?.entries.length}
+            onClick={() => void runAction(runBulkReplay)}
+            type="button"
+          >
             {intl.formatMessage(messages.replayAll)}
           </button>
-          <button className="action-button" onClick={() => void runAction(runBulkPurgeOldUnknown)} type="button">
+          <button
+            className="action-button"
+            onClick={() => void runAction(runBulkPurgeOldUnknown)}
+            type="button"
+          >
             {intl.formatMessage(messages.purgeOld)}
           </button>
         </div>
@@ -414,7 +497,9 @@ export function DlqPage() {
                 <tbody>
                   {data.entries.map((entry) => (
                     <tr
-                      className={entry.id === selected?.id ? "selected-row" : ""}
+                      className={
+                        entry.id === selected?.id ? "selected-row" : ""
+                      }
                       key={entry.id}
                       onClick={() => setSelectedId(entry.id)}
                     >
@@ -445,16 +530,34 @@ export function DlqPage() {
                   <p className="mono">{selected.id}</p>
                 </div>
                 <div className="dlq-action-grid">
-                  <button className="action-button" onClick={() => void runAction(() => runReplay(selected))} type="button">
+                  <button
+                    className="action-button"
+                    onClick={() => void runAction(() => runReplay(selected))}
+                    type="button"
+                  >
                     {intl.formatMessage(messages.replay)}
                   </button>
-                  <button className="action-button" onClick={() => void runAction(() => runReplay(selected, true))} type="button">
+                  <button
+                    className="action-button"
+                    onClick={() =>
+                      void runAction(() => runReplay(selected, true))
+                    }
+                    type="button"
+                  >
                     {intl.formatMessage(messages.replayDrift)}
                   </button>
-                  <button className="action-button" onClick={() => void runAction(() => runExport(selected))} type="button">
+                  <button
+                    className="action-button"
+                    onClick={() => void runAction(() => runExport(selected))}
+                    type="button"
+                  >
                     {intl.formatMessage(messages.exportFixture)}
                   </button>
-                  <button className="action-button danger-button" onClick={() => void runAction(() => runPurge(selected))} type="button">
+                  <button
+                    className="action-button danger-button"
+                    onClick={() => void runAction(() => runPurge(selected))}
+                    type="button"
+                  >
                     {intl.formatMessage(messages.purge)}
                   </button>
                 </div>

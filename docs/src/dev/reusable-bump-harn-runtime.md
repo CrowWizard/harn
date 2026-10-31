@@ -22,6 +22,23 @@ declared refresh and validation commands.
   artifact and embeds its exact base64 JSON plus SHA-256 in any generated bump
   pull request, so a repair sees the discovery failure that triggered it.
 
+Set `pr-title` to the full title required by the consuming repository, including
+its area prefix. Empty input uses the driver's `[CI] Bump Harn runtime` fallback.
+Fleet generators should derive this title from their registry's title policy.
+Callers must pin a released orchestration commit that supports these inputs
+before projecting them; an older released workflow does not accept new inputs.
+
+Package discovery remains the default. A root that is not a Harn package can set
+`test-inventory-mode: repository-validation` and supply a nonempty
+`validate-command`. This mode requires a readable root and positively observes
+that `harn.toml` is absent. Its separate
+`harn_bump.repository_validation.v1` receipt records `status: not_applicable`,
+the manifest observation, and the validator, without a success verdict or test
+counts. The declared validator still runs after refresh and must pass before
+the bump is ready. A package manifest, unreadable classification, unknown mode,
+or missing validator refuses the workflow; package discovery failures retain
+their existing repair receipts.
+
 ## Minimal caller workflow
 
 An open bump pull request may contain consumer repair commits. Refresh replays
@@ -62,6 +79,12 @@ It runs after compatibility migrations, repairs, and formatting, before validati
 For example, use `pnpm run codegen` to regenerate bytecode from the final source tree.
 The default is empty. A failed finalizer refuses refresh success.
 With the default `publish-failure-for-repair: false`, the bump stops before validation or publication.
+
+The workflow defaults to the `burin-labs` owned large Linux pool, `harn-ci-big`. Set
+`runs-on` to an available runner label when calling it from another organization,
+or when refresh and validation require a different machine. The orchestration
+step has a 20-minute limit and the complete job has a 30-minute limit, so a
+stalled bump fails before the hosted runner's longer disconnect window.
 
 ```yaml
 name: Bump Harn Runtime

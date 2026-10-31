@@ -1,3 +1,5 @@
+// Tests own their tasks and run no branch, so they spawn raw.
+#![allow(clippy::disallowed_methods)]
 //! Consolidated integration-test binary for the `harn-vm` crate.
 //!
 //! Most `harn-vm` integration tests compile into this single binary. Each
@@ -18,6 +20,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod agent_batch_controls;
 mod agent_call_stage_attribution;
 mod agent_fanout;
 mod agent_loop_boundary_terminal;

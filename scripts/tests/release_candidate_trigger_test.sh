@@ -26,7 +26,10 @@ cp "$root/scripts/lib/release_version.sh" "$root/scripts/lib/release_candidate_r
   "$root/scripts/lib/release_consumer_verdict.sh" "$root/scripts/lib/consumer_canary_policy.sh" \
   "$root/scripts/lib/candidate_archive_contract.sh" "$root/scripts/lib/sha256.sh" \
   "$root/scripts/lib/green_checkpoint.sh" "$repo/scripts/lib/"
-cp "$root/scripts/ci/consumer_canary_policy.json" "$root/scripts/ci/release_publication_overdue.sh" "$repo/scripts/ci/"
+cp "$root/scripts/lib/release-candidate-state.mjs" "$root/scripts/lib/consumer-observer.mjs" \
+  "$root/scripts/lib/consumer-observation-budget.mjs" "$repo/scripts/lib/"
+cp "$root/scripts/ci/consumer_observation_budget.json" "$repo/scripts/ci/"
+cp "$root/scripts/ci/consumer_canary_policy.json" "$repo/scripts/ci/"
 cp "$root/scripts/release_contract.env" "$root/scripts/release_runner_matrix.sh" "$repo/scripts/"
 cp "$root/scripts/release_contract.harn" "$root/scripts/path_visibility.harn" "$repo/scripts/"
 cp "$root/.github/release-runner-policy.json" "$repo/.github/"
@@ -49,8 +52,17 @@ cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 [[ "${FAKE_GH_FAIL:-0}" == 1 ]] && exit 1
 case "$2" in
-  */build-release-binaries.yml/runs\?*) [[ -z "${FAKE_SOURCE_RUN:-}" ]] || printf '%s\n' "$FAKE_SOURCE_RUN" ;;
-  */artifacts\?per_page=100) printf '%s\n' "${FAKE_SOURCE_ARTIFACTS:?source artifact fixture required}" ;;
+  */releases\?per_page=50)
+    [[ "${FAKE_RELEASES_FAIL:-0}" != 1 ]] || exit 1
+    jq -n --argjson tags "${FAKE_RELEASES:-[]}" '[$tags[] | {tag_name: ., draft: false}]' | jq -r "$4" ;;
+  */build-release-binaries.yml/runs\?*)
+    sha="${2#*head_sha=}"; sha="${sha%%&*}"
+    if [[ -n "${FAKE_SOURCE_RUN:-}" ]]; then
+      jq -n --argjson id "$FAKE_SOURCE_RUN" --arg sha "$sha" '{total_count:1,workflow_runs:[{id:$id,run_attempt:1,event:"workflow_dispatch",head_branch:"main",head_sha:$sha,status:"completed",conclusion:"success"}]}'
+    else echo '{"total_count":0,"workflow_runs":[]}'; fi ;;
+  */artifacts\?per_page=100\&page=1)
+    jq '.artifacts |= (to_entries|map(.value+{id:(.key+1)}))' \
+      <<< "${FAKE_SOURCE_ARTIFACTS:?source artifact fixture required}" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -184,18 +196,23 @@ resolve scheduled_reuse EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true \
    "$(output scheduled_reuse should_build_binaries)" == false &&
    "$(output scheduled_reuse reused_source_run_id)" == 4242 ]] \
   || fail "a complete live candidate was not reused"
-for missing_proof in expired empty missing partial; do
+for missing_proof in expired empty missing; do
   case "$missing_proof" in
     expired) filter='.artifacts[0].expired = true' ;;
     empty) filter='.artifacts[0].size_in_bytes = 0' ;;
     missing) filter='.artifacts = .artifacts[1:] | .total_count = (.artifacts | length)' ;;
-    partial) filter='.total_count += 1' ;;
   esac
   resolve "scheduled_$missing_proof" EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true \
     FAKE_SOURCE_RUN=4242 FAKE_SOURCE_ARTIFACTS="$(jq "$filter" <<< "$source_artifacts")"
   [[ "$(output "scheduled_$missing_proof" should_build_binaries)" == true ]] \
     || fail "schedule reused $missing_proof candidate evidence"
 done
+if run_resolver scheduled_partial EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true \
+  FAKE_SOURCE_RUN=4242 FAKE_SOURCE_ARTIFACTS="$(jq '.total_count += 1' <<< "$source_artifacts")"; then
+  fail "partial candidate artifacts read as an idle cache and started a new build"
+fi
+[[ -z "$(output scheduled_partial should_build_binaries)" ]] \
+  || fail "partial candidate artifacts emitted a build decision"
 if run_resolver scheduled_unread EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true FAKE_GH_FAIL=1; then
   fail "unread candidate inventory passed scheduled admission"
 fi
@@ -245,6 +262,25 @@ commit_version 0.10.142 "Release v0.10.142"
 resolve release_subject
 [[ "$(output release_subject build_mode)" == warm ]] \
   || fail "a Release subject without a version change built a candidate"
+
+# While main owes unpublished v0.10.142, a source candidate of any later main
+# commit is a release candidate with the full release proofs. Once published,
+# the same request is an ordinary source candidate.
+stable_sha="$(git -C "$repo" rev-parse HEAD)"
+for event in schedule workflow_dispatch; do
+  resolve "owed_$event" EVENT_NAME="$event" INPUT_SOURCE_CANDIDATE=true FAKE_RELEASES='["v0.10.141"]'
+  [[ "$(output "owed_$event" build_mode)" == candidate &&
+     "$(output "owed_$event" candidate_purpose)" == release &&
+     "$(output "owed_$event" rehearsal_source_sha)" == "$stable_sha" ]] \
+    || fail "an owed $event source candidate is not a release candidate: $(cat "$tmp/owed_$event.outputs")"
+done
+resolve published_source EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true FAKE_RELEASES='["v0.10.142"]'
+[[ "$(output published_source candidate_purpose)" == source &&
+   -z "$(output published_source rehearsal_source_sha)" ]] \
+  || fail "a source candidate of a published version claimed a release"
+if run_resolver owed_unread EVENT_NAME=schedule INPUT_SOURCE_CANDIDATE=true FAKE_RELEASES_FAIL=1; then
+  fail "an unread publication state admitted a candidate purpose"
+fi
 
 # Negative control: a prerelease version change is not a release candidate.
 commit_version 0.10.143-rc.1 "Prerelease"

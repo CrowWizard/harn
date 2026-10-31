@@ -3,6 +3,14 @@
 use harn_vm::value::VmError;
 use tempfile::tempdir;
 
+fn canonical_workspace_path(path: &str) -> String {
+    harn_vm::workspace_anchor::WorkspaceAnchor::canonicalize_path(std::path::Path::new(path))
+        .expect("canonical fixture root")
+        .to_str()
+        .expect("UTF-8 fixture root")
+        .to_owned()
+}
+
 fn run(source: &str) -> Result<String, String> {
     harn_vm::reset_thread_local_state();
     let source = format!("import {{ agent_loop }} from \"std/agent/loop\"\n{source}");
@@ -337,6 +345,7 @@ pipeline main(harness: Harness, task: unknown) {
 
 #[test]
 fn open_pins_workspace_anchor_and_surfaces_in_snapshot() {
+    let primary = canonical_workspace_path("/workspace/main");
     let lines = out(r#"
 pipeline main(harness: Harness, task: unknown) {
   const s = harness.agent.open(
@@ -358,8 +367,8 @@ pipeline main(harness: Harness, task: unknown) {
     assert_eq!(
         lines,
         vec![
-            "/workspace/main",
-            "/workspace/main",
+            primary.as_str(),
+            primary.as_str(),
             "2026-05-23T00:00:00Z",
             "0"
         ]
@@ -368,6 +377,7 @@ pipeline main(harness: Harness, task: unknown) {
 
 #[test]
 fn set_workspace_anchor_replaces_and_clears() {
+    let primary = canonical_workspace_path("/workspace/initial");
     let lines = out(r#"
 pipeline main(harness: Harness, task: unknown) {
   const s = harness.agent.open("anchor-set")
@@ -390,19 +400,13 @@ pipeline main(harness: Harness, task: unknown) {
 "#);
     assert_eq!(
         lines,
-        vec![
-            "true",
-            "true",
-            "/workspace/initial",
-            "false",
-            "true",
-            "true"
-        ]
+        vec!["true", "true", primary.as_str(), "false", "true", "true"]
     );
 }
 
 #[test]
 fn workspace_anchor_round_trips_through_fork() {
+    let primary = canonical_workspace_path("/workspace/main");
     let lines = out(r#"
 pipeline main(harness: Harness, task: unknown) {
   const src = harness.agent.open("anchor-fork-src", {
@@ -421,7 +425,7 @@ pipeline main(harness: Harness, task: unknown) {
   harness.stdio.log(anchor["additional_roots"][0]["mount_mode"])
 }
 "#);
-    assert_eq!(lines, vec!["/workspace/main", "1", "read_only"]);
+    assert_eq!(lines, vec![primary.as_str(), "1", "read_only"]);
 }
 
 #[test]
@@ -467,6 +471,10 @@ fn add_root_uses_default_mount_mode_emits_event_and_removes_cleanly() {
     let primary = tempdir().expect("primary tempdir");
     let mounted = tempdir().expect("mounted tempdir");
     let primary_path = primary.path().display().to_string();
+    let canonical_primary_path = std::fs::canonicalize(primary.path())
+        .expect("canonical primary tempdir")
+        .display()
+        .to_string();
     let mounted_path = std::fs::canonicalize(mounted.path())
         .expect("canonical mounted tempdir")
         .display()
@@ -514,7 +522,7 @@ pipeline main(harness: Harness, task: unknown) {{
         vec![
             "true".to_string(),
             "true".to_string(),
-            primary_path,
+            canonical_primary_path,
             "1".to_string(),
             "extend".to_string(),
             "1".to_string(),

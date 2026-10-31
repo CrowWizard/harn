@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 impl SessionState {
     pub(super) fn new(id: String) -> Self {
@@ -6,6 +7,8 @@ impl SessionState {
         let transcript = empty_transcript(&id);
         Self {
             admission_role: SessionAdmissionRole::Admitted,
+            transcript_recording_ready: false,
+            retention: Arc::new(()),
             id,
             transcript,
             subscribers: Vec::new(),
@@ -44,14 +47,31 @@ impl SessionState {
         }
     }
 
+    pub(super) fn insert_into(mut self, sessions: &mut HashMap<String, Self>) {
+        let std::collections::hash_map::Entry::Vacant(entry) = sessions.entry(self.id.clone())
+        else {
+            unreachable!("session admission cannot replace an existing session");
+        };
+        self.transcript_recording_ready = true;
+        crate::run_tape::note_session_opened(&self.id, &self.transcript);
+        entry.insert(self);
+    }
+
     pub(super) fn touch(&mut self) {
         self.last_accessed = Instant::now();
+    }
+
+    pub(super) fn is_evictable(&self) -> bool {
+        self.transcript_journal.is_none() && Arc::strong_count(&self.retention) == 1
     }
 
     pub(crate) fn replace_transcript(&mut self, transcript: VmValue) -> Result<(), String> {
         self.ensure_run_accepts_mutation("replace_transcript")?;
         if !crate::values_equal(&self.transcript, &transcript) {
             self.redo_stack.clear();
+            if self.transcript_recording_ready {
+                crate::run_tape::note_transcript_change(&self.id, &self.transcript, &transcript);
+            }
         }
         self.transcript = transcript;
         self.touch();

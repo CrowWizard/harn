@@ -1034,10 +1034,8 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|error| format!("failed to serialize fixture receipt: {error}"))?
         + "\n";
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(&temp, text)
-        .map_err(|error| format!("failed to write fixture receipt temp file: {error}"))?;
-    fs::rename(&temp, path).map_err(|error| format!("failed to replace fixture receipt: {error}"))
+    harn_vm::atomic_io::atomic_write(path, text.as_bytes())
+        .map_err(|error| format!("failed to replace fixture receipt: {error}"))
 }
 
 fn execution_paths(execution_dir: &Path, requests: &Path) -> ExecutionPaths {
@@ -1230,24 +1228,39 @@ fn report(state: &ExecutionState, json_mode: bool) {
             .expect("execution report serializes")
         );
     } else {
-        println!("Batch execution {}", state.execution_id);
-        println!("  phase: {}", state.phase);
-        println!("  revision: {}", state.revision);
         println!(
-            "  directory: {}",
-            state
-                .paths
-                .manifest
-                .parent()
-                .unwrap_or(Path::new("."))
-                .display()
+            "{}",
+            crate::localization::formatted!("Batch execution {}", state.execution_id)
+        );
+        println!(
+            "{}",
+            crate::localization::formatted!("  phase: {}", state.phase)
+        );
+        println!(
+            "{}",
+            crate::localization::formatted!("  revision: {}", state.revision)
+        );
+        println!(
+            "{}",
+            crate::localization::formatted!(
+                "  directory: {}",
+                state
+                    .paths
+                    .manifest
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .display()
+            )
         );
         if state
             .operation
             .as_ref()
             .is_some_and(|operation| operation.status == "dispatching")
         {
-            println!("  reconciliation required: true");
+            println!(
+                "{}",
+                crate::localization::formatted!("  reconciliation required: true")
+            );
         }
     }
 }

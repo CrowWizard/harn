@@ -502,6 +502,7 @@ impl AcpServer {
             ),
         ));
         let bridge = Arc::new(AcpBridge {
+            client_capabilities: self.client_capabilities.clone(),
             session_id: session_id.clone(),
             output: output.clone(),
             pending: self.pending.clone(),
@@ -560,6 +561,19 @@ impl AcpServer {
                             _ => tracking.finish_injection(message_id, false),
                         }
                     }
+                },
+            ));
+            let owner_id = session_id.clone();
+            let call_scope = store_scope.clone();
+            host_bridge.set_tool_execution_boundary(Arc::new(
+                move |tool_call_id, side_effect, stage| {
+                    super::checkpoint_tracking::attribute_tool_execution(
+                        &owner_id,
+                        &call_scope,
+                        tool_call_id,
+                        side_effect,
+                        stage,
+                    )
                 },
             ));
         }

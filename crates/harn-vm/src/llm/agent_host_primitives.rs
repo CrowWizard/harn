@@ -23,6 +23,8 @@ mod side_effect_ceiling;
 mod structured_tool_result;
 pub(crate) mod tool_catalog;
 mod tool_parse_diagnostics;
+pub(crate) mod tool_tape;
+pub(crate) use tool_tape::host_agent_dispatch_tool_call;
 pub(crate) mod tool_result_budget;
 mod undispatched_tool;
 use crate::orchestration::ToolDispatchPolicy;
@@ -48,86 +50,7 @@ use side_effect_ceiling::{
 use tool_catalog::{
     annotations_for as tool_annotations_for, descriptor_for as tool_descriptor_for,
 };
-use tool_parse_diagnostics::parse_error_carrier_feedback;
-
-/// Cause-named feedback for a tool call whose arguments failed validation
-/// because of an argument-DELIVERY fault — the model authored a real call, but
-/// what reached dispatch is not what it wrote. Two classes, both of which the
-/// generic "missing required parameter(s): path" message misdiagnoses as a
-/// model slip and sends into re-call loops:
-///
-/// 1. A `{"__parse_error": "..."}` carrier — the streamed-argument parser
-///    could not reassemble the call. Split on the parser diagnostic
-///    (`parse_error_carrier_feedback`): a truncation (`EOF while parsing` /
-///    `unexpected end of input`) coaches a smaller re-issue; any other parse
-///    fault coaches a clean re-issue as valid JSON.
-/// 2. EMPTY arguments (`{}` or null). Observed live on the OpenAI-compatible
-///    native tool-call route (an IDE host bug report): 13/165 edit calls
-///    arrived with literally `{}` arguments while the model generated
-///    549–5,056 output tokens those turns — the model authored content, but
-///    the provider boundary delivered an empty-args call. Keyed off the turn's
-///    provider stop reason: length truncation (`length` / `max_tokens` /
-///    `MAX_TOKENS`) coaches a smaller re-issue; anything else is a
-///    provider/template drop coaching an identical re-issue with full args.
-///
-/// Returns `None` when the arguments were delivered intact (non-empty, no
-/// carrier), so ordinary validation failures keep the precise
-/// missing-parameter message. The `&'static str` is a machine-readable cause
-/// (`arguments_truncated` / `arguments_malformed` / `empty_arguments_truncated`
-/// / `empty_arguments_dropped`) exposed on the dispatch envelope so hosts can
-/// distinguish the class without string-matching the reason.
-fn arg_delivery_fault_feedback(
-    tool_name: &str,
-    raw_args: &serde_json::Value,
-    stop_reason: Option<&str>,
-) -> Option<(String, &'static str)> {
-    // A `{"__parse_error": "..."}` carrier is the streamed-argument parser's
-    // signal that it could NOT reassemble the tool call's arguments and handed
-    // dispatch a placeholder instead of what the model authored (see
-    // `parse_openai_streamed_tool_argument_values` /
-    // `parse_anthropic_streamed_tool_input`). Left alone it fails required-arg
-    // validation and reports the misdiagnosing "missing required parameter:
-    // path" — a lie, because the model DID write `path`; the stream was cut
-    // mid-value or the arguments were not valid JSON. This is the non-empty
-    // sibling of the empty-args fault below, so it is named here before the
-    // emptiness check (which the carrier object would otherwise fall through).
-    // Observed live on llamacpp qwen3.6-35b: a truncated `edit(create)` carrier
-    // spun 21 llm calls to an idle turn with no reply.
-    if let serde_json::Value::Object(map) = raw_args {
-        if let Some(parse_error) = map.get("__parse_error").and_then(|v| v.as_str()) {
-            return Some(parse_error_carrier_feedback(tool_name, parse_error));
-        }
-    }
-    let args_empty = match raw_args {
-        serde_json::Value::Null => true,
-        serde_json::Value::Object(map) => map.is_empty(),
-        _ => false,
-    };
-    if !args_empty {
-        return None;
-    }
-    if agent_session_host::is_length_truncation(stop_reason) {
-        Some((
-            format!(
-                "Tool '{tool_name}' arrived with EMPTY arguments because the response hit \
-                 the output-token limit (finish_reason=length): your tool call's arguments \
-                 were TRUNCATED by the output limit. Re-issue the call with shorter \
-                 content, or split the change into several smaller calls."
-            ),
-            "empty_arguments_truncated",
-        ))
-    } else {
-        Some((
-            format!(
-                "Tool '{tool_name}' arrived with EMPTY arguments — a known \
-                 provider/template fault where the arguments you authored are dropped at \
-                 the provider boundary, not a formatting mistake on your part. Re-issue \
-                 the same call with its full arguments."
-            ),
-            "empty_arguments_dropped",
-        ))
-    }
-}
+use tool_parse_diagnostics::arg_delivery_fault_feedback;
 
 /// Synthesize placeholder tool_results for calls that were persisted as an
 /// assistant tool_use turn but will never be dispatched (pre-dispatch
@@ -583,21 +506,12 @@ use super::agent_host_tool_dispatch::{
     ToolDispatchRequest,
 };
 
-pub(crate) async fn host_agent_dispatch_tool_call(
+async fn dispatch_tool_call_live(
     ctx: crate::vm::AsyncBuiltinCtx,
-    call: VmValue,
+    call: std::sync::Arc<crate::value::DictMap>,
     tools: Option<&VmValue>,
     options: &crate::value::DictMap,
 ) -> Result<VmValue, VmError> {
-    let call = match call {
-        VmValue::Dict(call) => call,
-        other => {
-            return Err(VmError::Runtime(format!(
-            "__host_agent_dispatch_tool_call(call, tools?, options?): call must be a dict; got {}",
-            other.type_name()
-        )))
-        }
-    };
     let tool_id = ["id", "tool_call_id", "call_id"]
         .iter()
         .find_map(|key| match call.get(*key) {
@@ -662,6 +576,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
             &tool_name,
             &tool_id,
             &tool_args,
+            None,
             tools,
             denial.into_tool_denial(&tool_name),
         ))
@@ -749,7 +664,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                             &tool_args,
                             denial,
                             false,
-                            DenialEvidence::new(Some(policy_decision), None),
+                            DenialEvidence::new(Some(policy_decision), None)
+                                .with_operation(approval_args.as_ref()),
                         )
                         .await);
                     }
@@ -790,7 +706,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                         &tool_args,
                         denial,
                         escalated,
-                        DenialEvidence::new(Some(policy_decision), None),
+                        DenialEvidence::new(Some(policy_decision), None)
+                            .with_operation(approval_args.as_ref()),
                     )
                     .await);
                 }
@@ -802,6 +719,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                 &tool_name,
                 &tool_id,
                 &tool_args,
+                approval_args.as_ref(),
                 tools,
                 policy_denial.into_tool_denial(&tool_name),
             ))
@@ -835,7 +753,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                 &tool_args,
                 denial,
                 false,
-                DenialEvidence::new(None, None),
+                DenialEvidence::new(None, None).with_operation(approval_args.as_ref()),
             )
             .await);
         }
@@ -930,7 +848,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                     &tool_args,
                     denial,
                     escalated,
-                    DenialEvidence::new(None, None),
+                    DenialEvidence::new(None, None).with_operation(approval_args.as_ref()),
                 )
                 .await);
             }
@@ -988,7 +906,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                 &tool_args,
                 denial,
                 false,
-                DenialEvidence::new(Some(decision.receipt), None),
+                DenialEvidence::new(Some(decision.receipt), None)
+                    .with_operation(approval_args.as_ref()),
             )
             .await);
         }
@@ -1104,7 +1023,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
                     &tool_args,
                     denial,
                     escalated,
-                    DenialEvidence::new(Some(decision.receipt.clone()), None),
+                    DenialEvidence::new(Some(decision.receipt.clone()), None)
+                        .with_operation(approval_args.as_ref()),
                 )
                 .await);
             }
@@ -1122,7 +1042,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
             None,
             reason,
         );
-        let denied = deny_tool_call(
+        let denied = Box::pin(deny_tool_call(
             Some(&ctx),
             &session_id,
             &tool_name,
@@ -1131,7 +1051,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
             denial,
             false,
             DenialEvidence::new(None, None),
-        )
+        ))
         .await;
         let denied = attach_hook_reminder_audit(denied, hook_reminder_reports);
         return Ok(json_to_vm_value(&denied));
@@ -1251,7 +1171,7 @@ pub(crate) async fn host_agent_dispatch_tool_call(
             Some((decision.terminal_denial(), Some(decision.receipt)))
         });
     if let Some((denial, receipt)) = final_denial {
-        let denied = deny_tool_call(
+        let denied = Box::pin(deny_tool_call(
             Some(&ctx),
             &session_id,
             &tool_name,
@@ -1259,8 +1179,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
             &tool_args,
             denial,
             false,
-            DenialEvidence::new(receipt, None),
-        )
+            DenialEvidence::new(receipt, None).with_operation(approval_args.as_ref()),
+        ))
         .await;
         return Ok(json_to_vm_value(&attach_hook_reminder_audit(
             denied,
@@ -1293,11 +1213,8 @@ pub(crate) async fn host_agent_dispatch_tool_call(
     )
     .map(|(handle, guard)| (Some(handle), Some(guard)))
     .unwrap_or((None, None));
-    // Heap-pin the dispatch future on a frame that dies immediately. The
-    // tool-execution path builds large per-call state (e.g.
-    // `LlmCallOptions`/`LlmRequestPayload`), and both await arms below consume
-    // the `Pin<Box<_>>` directly, but the box alone is not enough: see
-    // `pin_scoped_tool_dispatch`.
+    // The scoped heap pin avoids retaining a large dispatch frame; the box
+    // alone is insufficient (see `pin_scoped_tool_dispatch`).
     let mut dispatch_future = pin_scoped_tool_dispatch(
         session_id.clone(),
         tool_id.clone(),
@@ -1316,36 +1233,32 @@ pub(crate) async fn host_agent_dispatch_tool_call(
     );
     let (outcome, preempted_by_cancel) = match cancel_handle.as_ref() {
         Some(handle) => {
-            // Race the dispatch against the cancellation signal. When the
-            // signal wins, the dispatch future is dropped immediately — the
-            // tool's own resources unwind via tokio's drop guarantees.
-            // Tools that hold non-droppable state (long-lived subprocesses)
-            // can additionally honor the per-call handle through
-            // `crate::tool_call_cancellations::lookup` to coordinate
-            // graceful shutdown.
-            //
-            // The dispatch arm is `biased`, so a dispatch that finishes in
-            // the same tick as cancellation still wins — the side effect
-            // already landed, so reporting "cancelled" then would lie about
-            // what actually happened.
+            // Committed writes finish and report their outcome; ties favor dispatch.
             let cancel_wait = handle.cancelled();
             tokio::pin!(cancel_wait);
             tokio::select! {
                 biased;
-                outcome = &mut dispatch_future => (outcome, false),
-                _ = &mut cancel_wait => (
-                    agent_tools::ToolDispatchOutcome {
-                        result: Err(VmError::CategorizedError {
-                            message: handle
-                                .reason()
-                                .unwrap_or_else(|| "tool call cancelled in-flight".to_string()),
-                            category: crate::value::ErrorCategory::Cancelled,
-                        }),
-                        executor: None,
-                        handler_outcome: None,
-                    },
-                    true,
-                ),
+                outcome = &mut dispatch_future => {
+                    let stopped = matches!(outcome.result.as_ref(), Err(VmError::ToolCallStopped));
+                    (outcome, stopped)
+                },
+                _ = &mut cancel_wait => {
+                    // Wait for an active atomic write, not the rest of the handler.
+                    handle.wait_for_write_commit().await;
+                    (
+                        agent_tools::ToolDispatchOutcome {
+                            result: Err(VmError::CategorizedError {
+                                message: handle
+                                    .reason()
+                                    .unwrap_or_else(|| "tool call cancelled in-flight".to_string()),
+                                category: crate::value::ErrorCategory::Cancelled,
+                            }),
+                            executor: None,
+                            handler_outcome: None,
+                        },
+                        true,
+                    )
+                },
             }
         }
         None => (dispatch_future.await, false),

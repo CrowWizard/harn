@@ -2,6 +2,7 @@ use super::*;
 
 mod cancellation;
 mod prompt_output;
+mod run_tape;
 mod timeline;
 mod typed_observability;
 
@@ -98,6 +99,7 @@ async fn acp_server_handles_session_flow_and_prompt_updates() {
             assert_eq!(
                 initialize["result"]["agentCapabilities"]["sessionCapabilities"],
                 serde_json::json!({
+                    "additionalDirectories": {},
                     "close": {},
                     "list": {},
                     "resume": {},
@@ -116,8 +118,8 @@ async fn acp_server_handles_session_flow_and_prompt_updates() {
             assert_eq!(
                 initialize["result"]["agentCapabilities"]["mcpCapabilities"],
                 serde_json::json!({
-                    "http": true,
-                    "sse": true,
+                    "http": false,
+                    "sse": false,
                 })
             );
             assert!(
@@ -287,6 +289,7 @@ harness.stdio.println(json_stringify({len: len(messages), messages: messages}))
         for _ in 0..4 {
             let message = recv_json(&mut response_rx).await;
             if message["id"] == 4 {
+                assert!(message.get("error").is_none(), "{message}");
                 response = Some(message);
             } else if message["method"] == "session/update"
                 && message["params"]["update"]["sessionUpdate"] == "session_truncated"
@@ -1009,6 +1012,7 @@ async fn acp_bridge_routes_session_request_permission_response() {
     let server =
         AcpServer::new_with_output(AcpServerConfig::new(None), AcpOutput::Channel(tx.clone()));
     let bridge = Arc::new(AcpBridge {
+        client_capabilities: server.client_capabilities.clone(),
         session_id: "session-1".to_string(),
         output: AcpOutput::Channel(tx),
         pending: server.pending.clone(),

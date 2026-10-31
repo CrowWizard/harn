@@ -928,19 +928,10 @@ fn record_daemon_event(
 }
 
 fn write_persisted_meta(meta_path: &str, meta: &PersistedDaemonMeta) -> Result<(), VmError> {
-    let meta_path = PathBuf::from(meta_path);
-    if let Some(parent) = meta_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| VmError::Runtime(format!("daemon meta mkdir error: {error}")))?;
-    }
     let encoded = serde_json::to_string_pretty(meta)
         .map_err(|error| VmError::Runtime(format!("daemon meta encode error: {error}")))?;
-    let tmp = meta_path.with_extension("json.tmp");
-    std::fs::write(&tmp, encoded)
-        .map_err(|error| VmError::Runtime(format!("daemon meta write error: {error}")))?;
-    std::fs::rename(&tmp, &meta_path)
-        .map_err(|error| VmError::Runtime(format!("daemon meta finalize error: {error}")))?;
-    Ok(())
+    crate::atomic_io::atomic_write(Path::new(meta_path), encoded.as_bytes())
+        .map_err(|error| VmError::Runtime(format!("daemon meta write error: {error}")))
 }
 
 fn persist_daemon_meta(daemon: &DaemonState) -> Result<(), VmError> {
@@ -1044,7 +1035,7 @@ fn spawn_daemon_task(state: Arc<parking_lot::Mutex<DaemonState>>, mut vm: crate:
 
 fn start_daemon_monitor(state: Arc<parking_lot::Mutex<DaemonState>>) {
     let monitor_state = state.clone();
-    let handle = tokio::spawn(async move {
+    let handle = crate::task_spawn::spawn(async move {
         loop {
             let should_exit = {
                 let mut daemon = monitor_state.lock();

@@ -95,8 +95,15 @@ pub(crate) async fn run(args: OrchestratorReloadArgs) -> Result<(), Orchestrator
         .map(Vec::len)
         .unwrap_or(0);
     println!(
-        "reload {} via {} (+{} ~{} -{})",
-        parsed.status, parsed.source, added, modified, removed
+        "{}",
+        crate::localization::formatted!(
+            "reload {} via {} (+{} ~{} -{})",
+            parsed.status,
+            parsed.source,
+            added,
+            modified,
+            removed
+        )
     );
     Ok(())
 }
@@ -172,10 +179,7 @@ fn canonical_authorization(
 
 fn canonical_request_message(method: &str, path: &str, timestamp: &str, body: &[u8]) -> String {
     let body_hash = Sha256::digest(body);
-    let body_hex = body_hash
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let body_hex = hex::encode(body_hash);
     format!(
         "{}\n{}\n{}\n{}",
         method.to_uppercase(),

@@ -117,7 +117,10 @@ fn run_blocking(args: UpgradeArgs) -> Result<(), String> {
             };
             println!("{}", json_envelope::to_string_pretty(&envelope));
         } else if let Ok(receipt) = &result {
-            println!("Installed {}", receipt.binary_path.display());
+            println!(
+                "{}",
+                crate::localization::formatted!("Installed {}", receipt.binary_path.display())
+            );
         }
         return result.map(|_| ());
     }
@@ -295,8 +298,14 @@ fn upgrade(
         hook_runtime: None,
     });
     if !args.json && args.check {
-        println!("Installed: v{current}");
-        println!("Target:    {target}");
+        println!(
+            "{}",
+            crate::localization::formatted!("Installed: v{current}", current = current)
+        );
+        println!(
+            "{}",
+            crate::localization::formatted!("Target:    {target}", target = target)
+        );
     } else if !args.json {
         progress(format!("Installed: v{current}"));
         progress(format!("Target:    {target}"));
@@ -306,7 +315,10 @@ fn upgrade(
     }
     if !args.force && !report.needs_upgrade {
         if !args.json {
-            println!("Already on the latest release.");
+            println!(
+                "{}",
+                crate::localization::formatted!("Already on the latest release.")
+            );
         }
         return Ok(());
     }
@@ -379,7 +391,13 @@ fn upgrade(
     print_hook_runtime_outcome(&hook_report);
     report.hook_runtime = Some(hook_report);
     if !args.json {
-        println!("Upgraded harn to {target}. Re-run your last command to use the new binary.");
+        println!(
+            "{}",
+            crate::localization::formatted!(
+                "Upgraded harn to {target}. Re-run your last command to use the new binary.",
+                target = target
+            )
+        );
     }
     Ok(())
 }
@@ -819,7 +837,7 @@ fn copy_sha256_hex(
             .map_err(|error| error.to_string())?;
         hasher.update(&buf[..n]);
     }
-    Ok(hex_lower(&hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Parse a coreutils-style SHA256SUMS manifest and return the digest
@@ -843,14 +861,6 @@ fn find_expected_sha(manifest: &str, asset: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 /// First release that publishes macOS and Linux archives as `.tar.xz`; earlier ones are `.tar.gz`.

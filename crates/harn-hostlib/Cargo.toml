@@ -36,6 +36,9 @@ full = ["ast", "native-secret-store", "terminal-session", "grammars-all"]
 # product surface opts into the platform implementation explicitly.
 native-secret-store = ["harn-vm/native-keyring"]
 
+# Locale policy and Clap help projection for command-line product adapters.
+cli-localization = ["dep:clap"]
+
 # Typed pseudo-terminal sessions. The implementation is linked into full
 # embedders; script authority is carried by the `HarnessTerminalSession`
 # receiver and the active execution policy.
@@ -122,19 +125,20 @@ grammar-data = [
 ]
 
 [dependencies]
-harn-builtin-meta = { path = "../harn-builtin-meta", version = "=0.10.181" }
-harn-clock = { path = "../harn-clock", version = "=0.10.181" }
-harn-languages = { path = "../harn-languages", version = "=0.10.181" }
-harn-makefile = { path = "../harn-makefile", version = "=0.10.181" }
+harn-builtin-meta = { path = "../harn-builtin-meta", version = "=0.10.183" }
+harn-clock = { path = "../harn-clock", version = "=0.10.183" }
+harn-languages = { path = "../harn-languages", version = "=0.10.183" }
+harn-makefile = { path = "../harn-makefile", version = "=0.10.183" }
 # Hostlib never issues Postgres queries, so it takes the VM lean and lets
 # the full CLI re-enable `pg.*` through its own direct harn-vm edge (Cargo
 # unifies the feature across the build graph).
-harn-flock = { path = "../harn-flock", version = "=0.10.181" }
-harn-parser = { path = "../harn-parser", version = "=0.10.181" }
-harn-session-store = { path = "../harn-session-store", version = "=0.10.181" }
-harn-vm = { path = "../harn-vm", version = "=0.10.181", default-features = false }
-harn-terminal = { path = "../harn-terminal", version = "=0.10.181", optional = true }
+harn-flock = { path = "../harn-flock", version = "=0.10.183" }
+harn-parser = { path = "../harn-parser", version = "=0.10.183" }
+harn-session-store = { path = "../harn-session-store", version = "=0.10.183" }
+harn-vm = { path = "../harn-vm", version = "=0.10.183", default-features = false }
+harn-terminal = { path = "../harn-terminal", version = "=0.10.183", optional = true }
 async-trait = "0.1"
+cap-std = "4.0.3"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # The code-index snapshot codec. Already in the workspace graph through harn-vm.
@@ -143,6 +147,7 @@ postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 foldhash = "0.2"
 sha2 = "0.11"
 hex = "0.4"
+percent-encoding = "2.3"
 tokio = { version = "1", features = ["rt", "macros", "sync", "fs", "net", "process", "time"] }
 thiserror = "2"
 toml = "1.1"
@@ -177,6 +182,7 @@ globset = "0.4"
 walkdir = "2"
 base64 = "0.23"
 regex = "1"
+clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "string"], optional = true }
 regex-automata = "0.4"
 
 # Computer-use local backend (screenshot capture + synthetic input). Optional;
@@ -188,7 +194,7 @@ image = { version = "0.25", optional = true }
 
 # Tree-sitter grammars driving `ast::*` (issue #564). Each `grammar-*`
 # family above turns on its grammars here.
-harn-grammars = { path = "../harn-grammars", version = "=0.10.181", default-features = false }
+harn-grammars = { path = "../harn-grammars", version = "=0.10.183", default-features = false }
 arcstr = { version = "1", features = ["serde", "std"] }
 
 # Native process supervision uses POSIX process and group signals.
@@ -210,17 +216,17 @@ serde_json = "1"
 # Tests run scripts against every builtin family. The library itself registers
 # through harn-vm's registry, so the binaries that link harn-runtime supply the
 # families and hostlib does not wait on harn-builtins to compile.
-harn-runtime = { path = "../harn-runtime", version = "=0.10.181" }
+harn-runtime = { path = "../harn-runtime", version = "=0.10.183" }
 rstest.workspace = true
-harn-modules = { path = "../harn-modules", version = "=0.10.181", features = ["bundled-stdlib"] }
-harn-clock = { path = "../harn-clock", version = "=0.10.181", features = ["test-support"] }
+harn-modules = { path = "../harn-modules", version = "=0.10.183", features = ["bundled-stdlib"] }
+harn-clock = { path = "../harn-clock", version = "=0.10.183", features = ["test-support"] }
 serde_json = "1"
 jsonschema.workspace = true
 shell-words = "1.1"
 filetime = "0.2"
 criterion = "0.8"
-harn-lexer = { path = "../harn-lexer", version = "=0.10.181" }
-harn-parser = { path = "../harn-parser", version = "=0.10.181" }
+harn-lexer = { path = "../harn-lexer", version = "=0.10.183" }
+harn-parser = { path = "../harn-parser", version = "=0.10.183" }
 time = "0.3"
 
 [[bench]]

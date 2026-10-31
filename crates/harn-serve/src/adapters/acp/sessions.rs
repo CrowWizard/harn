@@ -563,6 +563,7 @@ pub(super) enum PreparedSessionRequest {
 }
 
 pub(super) struct Session {
+    pub(super) _retention: harn_vm::agent_sessions::SessionRetention,
     pub(super) cwd: PathBuf,
     pub(super) project_root: PathBuf,
     pub(super) store_scope: harn_vm::SessionStoreScope,
@@ -667,8 +668,19 @@ pub(super) fn resolve_acp_session_cwd(
 
 /// Project one canonical store row into ACP's persisted-session shape.
 pub fn acp_persisted_session_item(session: harn_session_store::SessionMeta) -> serde_json::Value {
+    try_acp_persisted_session_item(session).unwrap_or_else(|error| {
+        serde_json::json!({"error": {"code": "invalid_session_metadata", "message": error.to_string()}})
+    })
+}
+
+/// Project a store row, refusing malformed typed metadata.
+pub fn try_acp_persisted_session_item(
+    session: harn_session_store::SessionMeta,
+) -> harn_session_store::StoreResult<serde_json::Value> {
+    let directories = session.additional_directories()?;
     let mut item = serde_json::json!({
         "sessionId": session.id,
+        "additionalDirectories": directories,
         "liveState": "persisted",
         "activePrompt": false,
         "attachableRoles": [],
@@ -704,7 +716,7 @@ pub fn acp_persisted_session_item(session: harn_session_store::SessionMeta) -> s
             item[key] = value;
         }
     }
-    item
+    Ok(item)
 }
 
 /// Land a stop on a registered session.
@@ -953,13 +965,25 @@ mod budget_rearm_tests {
         }));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(turn.as_mut().poll(&mut cx).is_pending());
-        assert!(controls.apply_budget_rearm(&set_budget_frame(json!({
-            "sessionId": "missing", "llm_cost_usd": 9.0, "llm_tokens": 90
-        }))));
+        assert!(matches!(
+            controls.try_apply_budget_rearm(&set_budget_frame(json!({
+                "sessionId": "missing", "llm_cost_usd": 9.0, "llm_tokens": 90
+            }))),
+            Err(harn_vm::VmError::TypeError(_))
+        ));
+        assert_eq!(harn_vm::peek_llm_cost_budget(), Some(3.0));
+        assert_eq!(harn_vm::peek_llm_token_budget(), Some(30));
+        assert_eq!(harn_vm::llm::peek_total_cost(), 0.5);
         for invalid_id in [json!(null), json!(42), json!({"id": "target"})] {
-            assert!(controls.apply_budget_rearm(&set_budget_frame(json!({
-                "sessionId": invalid_id, "llm_cost_usd": 9.0, "llm_tokens": 90
-            }))));
+            assert!(matches!(
+                controls.try_apply_budget_rearm(&set_budget_frame(json!({
+                    "sessionId": invalid_id, "llm_cost_usd": 9.0, "llm_tokens": 90
+                }))),
+                Err(harn_vm::VmError::TypeError(_))
+            ));
+            assert_eq!(harn_vm::peek_llm_cost_budget(), Some(3.0));
+            assert_eq!(harn_vm::peek_llm_token_budget(), Some(30));
+            assert_eq!(harn_vm::llm::peek_total_cost(), 0.5);
         }
         assert!(controls.apply_budget_rearm(&set_budget_frame(json!({
             "sessionId": "target", "llm_cost_usd": 1.0, "llm_tokens": 10

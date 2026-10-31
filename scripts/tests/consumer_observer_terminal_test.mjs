@@ -7,7 +7,7 @@ import {execFileSync,spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {observerDeadlineName,observerDeadlineStep,observerWindowSteps} from '../lib/consumer-observer-window.mjs';
-import {admitChild, createTerminalReceipt, qualifyOwnedChild, observerDeclarationName, observerDeclarationStep, observerDispatchActor, observerRunName, observerTerminalName} from '../lib/consumer-observer.mjs';
+import {admitChild, createTerminalReceipt, qualifyOwnedChild, observerDeclarationName, observerDeclarationStep, observerPublicationWitness, observerDispatchActor, observerRunName, observerTerminalName} from '../lib/consumer-observer.mjs';
 
 test('the terminal entrypoint records only an authenticated reached product decision', () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'harn-observer-terminal-'));
@@ -159,8 +159,9 @@ test('the terminal entrypoint records only an authenticated reached product deci
           const selected=fixture.archives.filter((a,index)=>(wanted?a.metadata.name===wanted:[0,3].includes(index))&&fixture.missing!==index);
           record={total_count:selected.length,artifacts:selected.map(a=>a.metadata)};
         }else if(p.endsWith('/42/attempts/2'))record=fixture.parent;
-        else if(p.endsWith('/42/attempts/2/jobs'))record={total_count:1,jobs:fixture.parentJobs??[{id:701,conclusion:'success',steps:[{
-          name:${JSON.stringify(observerDeclarationStep)},status:'completed',conclusion:fixture.publication??'success'}]}]};
+        else if(p.endsWith('/42/attempts/2/jobs'))record={total_count:1,jobs:fixture.parentJobs??[{id:701,run_id:42,run_attempt:2,head_sha:fixture.parent.head_sha,conclusion:'success',steps:[{
+          name:${JSON.stringify(observerDeclarationStep)},number:2,status:'completed',conclusion:fixture.publication??'success'},
+          {name:${JSON.stringify(observerPublicationWitness(context))},number:3,status:'completed',conclusion:'success'}]}]};
         else if(p.endsWith('/'+fixture.child.id+'/attempts/'+fixture.child.run_attempt+'/jobs'))record={total_count:fixture.chronologyPartial?fixture.childJobs.length+1:fixture.childJobs.length,
           jobs:fixture.childJobs};
         else if(p.endsWith('/42'))record=++parentReads>(fixture.ordinaryObservation?0:1)&&fixture.finalParent?fixture.finalParent:fixture.parent;
@@ -385,12 +386,12 @@ test('the terminal entrypoint records only an authenticated reached product deci
     // manifest bound into custody, rather than borrowing a source-only pass.
     const admissionEntry=fileURLToPath(new URL('../ci/consumer-observer-admit.mjs',import.meta.url));
     const admissionEvent=path.join(scratch,'repair-event.json');
-    const admitBound=(inputs={})=>{
+    const admitBound=(inputs={},changes={})=>{
       const directory=path.join(scratch,`repair-admission-${sequence++}`);fs.mkdirSync(directory);
       const output=path.join(directory,'outputs');
       fs.writeFileSync(admissionEvent,JSON.stringify({inputs:{source_revision:context.source_revision,
         observer:JSON.stringify(context),release_producer_run_id:'900',release_producer_run_attempt:'1',...inputs}}));
-      fs.writeFileSync(fixture,JSON.stringify({...repairInputs,archives,child:{...pairedChild,status:'in_progress',conclusion:null}}));
+      fs.writeFileSync(fixture,JSON.stringify({...repairInputs,archives,child:{...pairedChild,status:'in_progress',conclusion:null},...changes}));
       const run=spawnSync(process.execPath,[admissionEntry],{encoding:'utf8',env:{PATH:process.env.PATH,
         NODE_OPTIONS:`--import=${observerPreload}`,GH_TOKEN:'fixture-read',OBSERVER_CONTEXT:JSON.stringify(context),
         GITHUB_REPOSITORY:'acme/widget-host',GITHUB_RUN_ID:'73',GITHUB_RUN_ATTEMPT:'1',GITHUB_SHA:child.head_sha,
@@ -406,6 +407,13 @@ test('the terminal entrypoint records only an authenticated reached product deci
     assert.equal(boundReceipt.producer.manifest_id,producerArtifacts.find(item=>item.name.startsWith('candidate-manifest-')).id);
     const wrongInput=admitBound({release_producer_run_id:'901'});
     assert.equal(wrongInput.run.status,1);assert.equal(wrongInput.text,'');
+    for(const audit of [{status:'in_progress',conclusion:null},...['failure','cancelled','skipped','timed_out',null]
+      .map(conclusion=>({status:'completed',conclusion}))]) {
+      const refused=admitBound({},{producerData:{...producerData,jobs:producerJobs.map(job=>
+        job.name==='Release residual audit'?{...job,...audit}:job)}});
+      assert.equal(refused.run.status,1,'promotion admission cannot bind a pending or failed audit');
+      assert.equal(refused.text,'');
+    }
     const bindArchive=(file,slot)=>{
       const archive=path.join(scratch,`bound-${slot}.zip`);
       const zipped=spawnSync('zip',['-j',archive,file],{encoding:'utf8'});assert.equal(zipped.status,0,zipped.stderr);
@@ -456,6 +464,7 @@ test('the terminal entrypoint records only an authenticated reached product deci
       started_at:timestamp(start),completed_at:timestamp(end)});
     const parentJobs=[{id:701,run_id:42,run_attempt:2,head_sha:parent.head_sha,status:'completed',conclusion:'failure',steps:[
       step(observerDeclarationStep,2,999,1001,'success'),
+      step(observerPublicationWitness(context),3,1001,1002,'success'),
       step(observerWindowSteps[2],8,8100,8201,'failure'),
       step(observerDeadlineStep,9,8201,8202,'success')]}];
     const laterJob={id:801,run_id:73,run_attempt:1,head_sha:child.head_sha,status:'completed',conclusion:'success',

@@ -122,8 +122,8 @@ pub(crate) use doctor::{DoctorArgs, DoctorCommand};
 pub(crate) use dump::{
     ConnectorSchemaCodegenArgs, DumpBuiltinMethodsArgs, DumpCliSurfaceArgs,
     DumpConnectorMatrixArgs, DumpHarnessMigrationsArgs, DumpHighlightKeywordsArgs,
-    DumpOperatorPrecedenceArgs, DumpPortableBenchmarkSchemaArgs, DumpPromptGrammarArgs,
-    DumpProtocolArtifactsArgs, DumpTriggerQuickrefArgs,
+    DumpOperatorPrecedenceArgs, DumpPortableBenchmarkSchemaArgs, DumpPortalTypesArgs,
+    DumpPromptGrammarArgs, DumpProtocolArtifactsArgs, DumpTriggerQuickrefArgs,
 };
 pub use eval::{
     EvalArgs, EvalCalibrateArgs, EvalCodingAgentArgs, EvalCommand, EvalContextArgs, EvalPromptArgs,
@@ -250,8 +250,8 @@ pub(crate) use session::{
     SessionViewFixturesArgs,
 };
 pub(crate) use signals::{
-    SignalSeverityArg, SignalSignatureArg, SignalsArgs, SignalsCommand, SignalsFireArgs,
-    SignalsHookArgs, SignalsHookEvent, SignalsHookFormat,
+    SignalSeverityArg, SignalSignatureArg, SignalsArgs, SignalsCommand, SignalsDispatchCommand,
+    SignalsFireArgs, SignalsHookArgs, SignalsHookEvent, SignalsHookFormat,
 };
 pub(crate) use skill::{
     SkillArgs, SkillCommand, SkillEndorseArgs, SkillKeyCommand, SkillKeyGenerateArgs,
@@ -320,7 +320,13 @@ pub(crate) struct Cli {
     #[arg(long = harn_vm::secrets::PARENT_SECRET_HANDOFF_OPTION, global = true)]
     pub parent_secret_stdin: bool,
     /// Apply a durable provider allowance from a TOML policy file.
-    #[arg(long, global = true, env = "HARN_SPEND_POLICY", value_name = "PATH")]
+    #[arg(
+        hide_env_values = true,
+        long,
+        global = true,
+        env = "HARN_SPEND_POLICY",
+        value_name = "PATH"
+    )]
     pub spend_policy: Option<std::path::PathBuf>,
 
     /// Emit the versioned argument tree used by the native CLI parser.
@@ -650,6 +656,12 @@ SCRIPTING
     /// `make gen-builtin-methods` target.
     #[command(hide = true, name = "dump-builtin-methods")]
     DumpBuiltinMethods(DumpBuiltinMethodsArgs),
+    /// Regenerate the portal web client's TypeScript API types from the Rust DTOs.
+    ///
+    /// Dev-only. Hidden from `--help` — invoke via the `make gen-portal-types`
+    /// target.
+    #[command(hide = true, name = "dump-portal-types")]
+    DumpPortalTypes(DumpPortalTypesArgs),
     /// Regenerate docs/llm/harn-triggers-quickref.md from the live trigger provider catalog.
     ///
     /// Dev-only. Hidden from `--help` — invoke via

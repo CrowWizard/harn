@@ -37,12 +37,19 @@
 //!   `.harn/state/checkpoints/<session>/blobs/` and die with the session.
 
 mod anchored_fs;
+mod builtins;
 mod fork;
 mod receipts;
 mod scan;
+mod seed;
+mod tape_effects;
 use anchored_fs::{open_anchor, restore_one, Step};
 #[cfg(all(test, unix))]
 use anchored_fs::{Stage, RESTORE_HOOK};
+use builtins::{
+    call_begin_builtin, call_end_builtin, capture_builtin, drop_builtin, plan_builtin,
+    restore_builtin,
+};
 pub use fork::{fork_session, ForkReceipt};
 use receipts::unavailable;
 pub use receipts::{
@@ -53,6 +60,10 @@ pub use receipts::{
 #[cfg(all(test, unix))]
 use scan::scan_tree_with_exclusions;
 use scan::{excluded_paths, is_excluded, scan_tree};
+pub use seed::{
+    ReplayWorkspace, SavedReplayWorkspace, SeedError, SeedLimits, SeedReceipt, SeedSchema,
+};
+pub use tape_effects::tape_effect_observer;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs as stdfs;
@@ -61,15 +72,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use harn_vm::tool_annotations::SideEffectLevel;
-use harn_vm::VmValue;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::HostlibError;
 use crate::fs::atomic_write;
 use crate::fs::paths::{normalize_against, sanitize_component, validate_session_id};
 use crate::registry::{BuiltinRegistry, HostlibCapability};
-use crate::tools::args::{dict_arg, optional_string, require_string, to_agent_path};
+use crate::tools::args::to_agent_path;
 
 const CAPTURE_BUILTIN: &str = "hostlib_fs_checkpoint_capture";
 const CALL_BEGIN_BUILTIN: &str = "hostlib_fs_checkpoint_call_begin";
@@ -166,6 +175,8 @@ struct Boundary {
 #[derive(Clone)]
 struct CallRecord {
     call_id: String,
+    /// The session revision `call_begin` admitted this invocation at.
+    invocation: u64,
     boundary_idx: usize,
     side_effect: Option<SideEffectLevel>,
     scan_errors: usize,
@@ -173,6 +184,7 @@ struct CallRecord {
 }
 
 struct PendingCall {
+    invocation: u64,
     boundary_idx: usize,
     scan: PendingScan,
 }
@@ -469,9 +481,11 @@ pub fn call_begin(
         }
         advance_revision(&mut state, CALL_BEGIN_BUILTIN)?;
         let boundary_idx = state.boundaries.len().saturating_sub(1);
+        let invocation = state.revision;
         state.pending.insert(
             call_id.to_string(),
             PendingCall {
+                invocation,
                 boundary_idx,
                 scan: PendingScan::Beginning,
             },
@@ -511,7 +525,7 @@ pub fn call_end(
     let Some(session) = find_session(session_id) else {
         return Ok(no_checkpoint(session_id));
     };
-    let (root, parents, before, boundary_idx) = {
+    let (root, parents, before, (invocation, boundary_idx)) = {
         let mut state = lock(&session);
         let root = state.root.clone();
         let parents = state.read_parent_ignores;
@@ -540,7 +554,12 @@ pub fn call_end(
             PendingScan::Active(before) => before.clone(),
         };
         pending.scan = PendingScan::Ending;
-        (root, parents, before, pending.boundary_idx)
+        (
+            root,
+            parents,
+            before,
+            (pending.invocation, pending.boundary_idx),
+        )
     };
     #[cfg(all(test, unix))]
     CALL_END_HOOK.with(|slot| {
@@ -587,6 +606,7 @@ pub fn call_end(
     let scan_errors = after.errors + before.errors;
     state.calls.push(CallRecord {
         call_id: call_id.to_string(),
+        invocation,
         boundary_idx,
         side_effect,
         scan_errors,
@@ -936,6 +956,7 @@ fn compute_plan(
             ) {
                 irreversible.push(IrreversibleEffect {
                     call_id: call.call_id.clone(),
+                    invocation: call.invocation,
                     side_effect: level,
                 });
             }
@@ -1354,7 +1375,8 @@ fn store_blob(dir: &Path, hash: &str, bytes: &[u8]) -> Result<(), String> {
 
 fn resolve_root(root: Option<&Path>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    normalize_against(&cwd, root.unwrap_or_else(|| Path::new(".")))
+    let resolved = normalize_against(&cwd, root.unwrap_or_else(|| Path::new(".")));
+    harn_vm::workspace_path::canonicalize_existing_ancestor(&resolved).unwrap_or(resolved)
 }
 
 fn require_non_empty(
@@ -1384,113 +1406,6 @@ fn unknown_boundary<T>(boundary_id: &str) -> Outcome<T> {
         "unknown_boundary",
         format!("boundary `{boundary_id}` was not captured for this session"),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Builtin glue
-// ---------------------------------------------------------------------------
-
-fn to_vm<T: Serialize>(value: &T) -> VmValue {
-    harn_vm::json_to_vm_value(&serde_json::to_value(value).expect("checkpoint result serializes"))
-}
-
-fn capture_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(CAPTURE_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(CAPTURE_BUILTIN, dict, "session_id")?;
-    let boundary_id = require_string(CAPTURE_BUILTIN, dict, "boundary_id")?;
-    let root = optional_string(CAPTURE_BUILTIN, dict, "root")?.map(PathBuf::from);
-    let policy = optional_string(CAPTURE_BUILTIN, dict, "writer_policy")?
-        .map(|raw| {
-            serde_json::from_value::<WriterPolicy>(serde_json::Value::String(raw.clone())).map_err(
-                |_| HostlibError::InvalidParameter {
-                    builtin: CAPTURE_BUILTIN,
-                    param: "writer_policy",
-                    message: format!("unknown writer policy `{raw}`"),
-                },
-            )
-        })
-        .transpose()?;
-    Ok(to_vm(&capture_with_writer_policy(
-        &session_id,
-        &boundary_id,
-        root.as_deref(),
-        policy,
-    )?))
-}
-
-fn call_begin_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(CALL_BEGIN_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(CALL_BEGIN_BUILTIN, dict, "session_id")?;
-    let call_id = require_string(CALL_BEGIN_BUILTIN, dict, "call_id")?;
-    Ok(to_vm(&call_begin(&session_id, &call_id)?))
-}
-
-fn call_end_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(CALL_END_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(CALL_END_BUILTIN, dict, "session_id")?;
-    let call_id = require_string(CALL_END_BUILTIN, dict, "call_id")?;
-    let side_effect = optional_string(CALL_END_BUILTIN, dict, "side_effect")?
-        .map(|raw| {
-            serde_json::from_value::<SideEffectLevel>(serde_json::Value::String(raw.clone()))
-                .map_err(|_| HostlibError::InvalidParameter {
-                    builtin: CALL_END_BUILTIN,
-                    param: "side_effect",
-                    message: format!("unknown side-effect class `{raw}`"),
-                })
-        })
-        .transpose()?;
-    Ok(to_vm(&call_end(&session_id, &call_id, side_effect)?))
-}
-
-fn plan_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(PLAN_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(PLAN_BUILTIN, dict, "session_id")?;
-    let boundary_id = require_string(PLAN_BUILTIN, dict, "boundary_id")?;
-    Ok(to_vm(&plan(&session_id, &boundary_id)?))
-}
-
-fn restore_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(RESTORE_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(RESTORE_BUILTIN, dict, "session_id")?;
-    let boundary_id = require_string(RESTORE_BUILTIN, dict, "boundary_id")?;
-    let paths = crate::value_args::optional_string_list(RESTORE_BUILTIN, dict, "paths")?;
-    let confirmed_paths = match dict.get("confirmed_paths") {
-        None | Some(VmValue::Nil) => Vec::new(),
-        Some(value) => {
-            let value = harn_vm::llm::vm_value_to_json_strict(value, "confirmed_paths").map_err(
-                |message| HostlibError::InvalidParameter {
-                    builtin: RESTORE_BUILTIN,
-                    param: "confirmed_paths",
-                    message,
-                },
-            )?;
-            serde_json::from_value::<Vec<ConfirmedPath>>(value).map_err(|error| {
-                HostlibError::InvalidParameter {
-                    builtin: RESTORE_BUILTIN,
-                    param: "confirmed_paths",
-                    message: error.to_string(),
-                }
-            })?
-        }
-    };
-    Ok(to_vm(&restore_with_confirmations(
-        &session_id,
-        &boundary_id,
-        paths.as_deref(),
-        &confirmed_paths,
-    )?))
-}
-
-fn drop_builtin(args: &[VmValue]) -> Result<VmValue, HostlibError> {
-    let raw = dict_arg(DROP_BUILTIN, args)?;
-    let dict = raw.as_ref();
-    let session_id = require_string(DROP_BUILTIN, dict, "session_id")?;
-    Ok(to_vm(&drop_session(&session_id)))
 }
 
 #[cfg(all(test, unix))]

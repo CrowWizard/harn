@@ -68,16 +68,30 @@ sha="$(jq -er --arg repository "$repository" --arg run_id "$run_id" --arg attach
     and ($repair == "true" or $standalone == "true" or (.status == "completed" and
       (.conclusion == "success" or ($attached == "true" and .conclusion == "failure"))))
     and (.event == "merge_group" or
-      ((.event == "push" or .event == "workflow_dispatch") and .head_branch == "main")))
+      ((.event == "push" or .event == "schedule" or .event == "workflow_dispatch") and .head_branch == "main")))
   | .head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))
 ' <<< "$run")" || {
   echo "::error::Run $run_id is not a successful owning release producer." >&2
   exit 1
 }
-[[ "$sha" == "$expected_sha" ]] || {
-  echo "::error::Candidate source does not match the requested publication identity." >&2
-  exit 1
-}
+policy_sha="$sha"
+if [[ "$sha" != "$expected_sha" ]]; then
+  [[ "$requires_consumer_repair" == true &&
+     "$(jq -r '.event' <<< "$run")" == workflow_dispatch &&
+     "$(jq -r '.status' <<< "$run")" == completed &&
+     "$(jq -r '.conclusion' <<< "$run")" == success ]] || {
+    echo '::error::A distinct historical source requires a successful authenticated consumer repair producer.' >&2
+    exit 1
+  }
+  lineage="$(gh api "repos/$repository/compare/$expected_sha...$policy_sha")"
+  jq -e --arg sha "$expected_sha" '
+    .status == "ahead" and .merge_base_commit.sha == $sha
+  ' <<< "$lineage" >/dev/null || {
+    echo '::error::Historical source is not an ancestor of its main build policy.' >&2
+    exit 1
+  }
+  sha="$expected_sha"
+fi
 comparison="$(gh api "repos/$repository/compare/$sha...main")"
 jq -e --arg sha "$sha" '
   (.status == "identical" or .status == "ahead") and .merge_base_commit.sha == $sha
@@ -85,7 +99,9 @@ jq -e --arg sha "$sha" '
   echo "::error::Candidate $sha is not contained in main." >&2
   exit 1
 }
-if [[ "$(jq -r '.event' <<< "$run")" == workflow_dispatch ]]; then
+# A maintainer-named non-push producer must hold a complete candidate. An
+# automatic run of any producer leaves the candidate lookup to the planner.
+if [[ "${RECOVERY:-false}" == true && "$(jq -r '.event' <<< "$run")" != push ]]; then
   cargo="$(gh api "repos/$repository/contents/Cargo.toml?ref=$sha" \
     -H 'Accept: application/vnd.github.raw+json')"
   version="$(release_workspace_version <<< "$cargo")"
@@ -97,7 +113,7 @@ if [[ "$(jq -r '.event' <<< "$run")" == workflow_dispatch ]]; then
     --arg files "$RELEASE_FILES_ARTIFACT" '[.[] | "harn-" + .] + ["candidate-manifest-" + $sha, $files]')"
   artifacts="$(gh api "repos/$repository/actions/runs/$run_id/artifacts?per_page=100")"
   if ! release_candidate_artifacts_complete "$artifacts" "$expected" ||
-    ! jq -e --argjson run_id "$run_id" --arg sha "$sha" --argjson run "$run" '
+    ! jq -e --argjson run_id "$run_id" --arg sha "$policy_sha" --argjson run "$run" '
       all(.artifacts[];
         .workflow_run.id == $run_id and .workflow_run.head_sha == $sha and
         .workflow_run.head_branch == "main" and

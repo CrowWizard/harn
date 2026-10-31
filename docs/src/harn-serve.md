@@ -591,6 +591,33 @@ Mapping:
   content blocks. The legacy `prompt_content` and `prompt_messages` globals
   remain available during the downstream migration window.
 
+Clients declare supported standard operations in `initialize.clientCapabilities`.
+Set `terminal: true` only when the client implements the complete `terminal/*`
+lifecycle. Filesystem operations use `fs.readTextFile` and `fs.writeTextFile`.
+Omitted, false or malformed terminal and filesystem capabilities do not permit those operations;
+the server refuses an unavailable terminal rather than forwarding a command to it.
+The `host/call` extension retains its separate host-capability contract.
+
+Session requests may supply an empty `mcpServers` list. Nonempty lists are
+refused until session MCP intake is implemented; configure servers through the
+runtime's existing MCP configuration. HTTP and SSE session intake are not
+advertised. A client `systemPrompt` is likewise refused rather than silently
+ignored. These refusals happen before creating or restoring a session.
+
+`session/new`, `session/load`, and `session/resume` accept
+`additionalDirectories` as the complete ordered list of additional workspace
+roots. Paths must name existing absolute directories. A malformed entry or a
+root outside process confinement refuses the whole request. The list expands
+filesystem scope without changing `cwd`; it cannot change during an active
+prompt. Existing execution policy ceilings still apply.
+
+Omitting the list or supplying `[]` activates no additional roots, including
+when loading a stored session. Stored paths report prior state and do not
+authorize a new launch. Accepted replacements persist before changing live
+grants; `session/list` reports the canonical ordered list. Open client sessions
+retain their runtime state until closed or released. At capacity, admission
+fails rather than evicting a still-open client's roots.
+
 ## Design rule
 
 If a behavior changes depending on whether the caller arrived over MCP, A2A, or

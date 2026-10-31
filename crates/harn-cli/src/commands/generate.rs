@@ -12,6 +12,7 @@ use std::process;
 
 use crate::cli::Command;
 use crate::commands;
+use crate::commands::generated_artifact::write_or_check;
 
 /// Run one generator command.
 ///
@@ -39,11 +40,23 @@ pub(crate) fn dispatch(command: Command) {
         Command::DumpBuiltinMethods(args) => {
             commands::dump_builtin_methods::run(&args.output, args.check);
         }
+        Command::DumpPortalTypes(args) => {
+            write_or_check(
+                std::path::Path::new(&args.output),
+                &commands::portal::render_ts_types(),
+                args.check,
+                "the portal DTOs",
+                "gen-portal-types",
+            );
+        }
         Command::DumpTriggerQuickref(args) => {
             commands::dump_trigger_quickref::run(&args.output, args.check);
         }
         Command::DumpCliSurface(args) => {
             commands::argument_schema::dump_surface(&args.output, args.check);
+            if let Some(path) = args.messages_output {
+                crate::localization::dump_catalog(&path, args.check);
+            }
         }
         Command::DumpConnectorMatrix(args) => {
             commands::check::connector_matrix::run_docs(&args.output, &args.sources, args.check);

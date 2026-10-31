@@ -28,8 +28,8 @@ run.tape.cas/      # content-addressed sidecar (BLAKE3 hex names)
   ```json
   {
     "type": "header",
-    "version": 1,
-    "harn_version": "0.8.4",
+    "version": 5,
+    "harn_version": "0.10.182",
     "started_at_unix_ms": 1700000000000,
     "script_path": "examples/cron-rollup.harn",
     "argv": ["--mode=daily"]
@@ -45,8 +45,10 @@ run.tape.cas/      # content-addressed sidecar (BLAKE3 hex names)
     "phase": "user_script",
     "virtual_time_ms": 1700000000000,
     "monotonic_ms": 0,
-    "kind": "clock_sleep",
-    "duration_ms": 250
+    "kind": {
+      "kind": "clock_sleep",
+      "duration_ms": 250
+    }
   }
   ```
 
@@ -56,7 +58,7 @@ optional — tapes that never spilled a payload have no sidecar.
 
 ## Record kinds
 
-The current schema (`version = 1`) emits the kinds below. Unknown
+The current schema (`version = 5`) emits the kinds below. Unknown
 record kinds in newer tapes deserialize as `unknown` so older
 fidelity checkers still produce a structured report.
 
@@ -64,7 +66,12 @@ fidelity checkers still produce a structured report.
 |---|---|---|
 | `clock_read` | `source` (`"wall"` or `"monotonic"`), `value_ms` | `harness.clock.now_ms()` / `harness.clock.monotonic_ms()` methods |
 | `clock_sleep` | `duration_ms` | `harness.clock.sleep_ms(...)` / `harness.testing.clock_advance(...)` |
-| `llm_call` | `request_digest`, `response` (inline or CAS) | LLM provider interception |
+| `llm_call` | `request_digest`, `response`, optional `call_index`, `request`, `messages`, `attribution` | LLM provider interception |
+| `cache_lookup` | `namespace`, `key`, `after_calls`, optional `value` | Persistent model-cache lookup |
+| `prompt_render` | `render_id`, `template_uri`, `rendered`, `spans` | Prompt rendering and source attribution |
+| `tool_call` | `call_id`, `tool`, `args_digest`, `after_calls`, `outcome`, `effects`, `transcript_changes`, optional `unservable` | Recorded tool dispatch |
+| `decision_evaluation` | `request_digest`, `response` | Typed evaluation request and receipt |
+| `payload_redaction` | none | A full run payload required credential redaction |
 | `file_read` | `path`, `content_hash`, `len_bytes` | `harness.fs.read_text(...)` builtins |
 | `file_write` | `path`, `content_hash`, `len_bytes` | `harness.fs.write_text(...)`, `harness.fs.append(...)`, `harness.fs.append_locked(...)` |
 | `file_delete` | `path` | `remove_file(...)` |
@@ -104,7 +111,13 @@ Smaller payloads stay inline:
 { "content_hash": "<blake3-hex>", "text": "...stdout..." }
 ```
 
-`content_hash` is a hex BLAKE3 digest of the raw bytes. The fidelity
+Run tapes apply the runtime's credential redaction policy before persisting
+payloads. A tape with a `payload_redaction` record remains readable but cannot
+serve an exact branch prefix. Secret-bearing file effects are omitted rather
+than replayed with altered contents. Branch workspaces must be existing copies;
+replayed writes and deletions use the sandbox's root-relative mutation path.
+
+`content_hash` is a hex BLAKE3 digest of the persisted bytes. The fidelity
 oracle compares hashes only; it never re-hashes payloads at compare
 time.
 
@@ -129,8 +142,37 @@ The header's `version` integer gates compatibility:
 - Renaming or repurposing an existing field is breaking and requires a
   version bump.
 
-When you bump the version, add a "Changes from v\<previous\>" section
-below.
+Loading an older tape does not establish that it supports branching. Branch
+admission also requires the current recording metadata and complete evidence
+for the requested prefix; it refuses missing or incompatible evidence.
+
+### Changes from v4 to v5
+
+`tool_call.transcript_changes` includes typed `lifecycle` entries alongside
+`fields` entries. An `opened` entry carries the initial versioned transcript;
+a `closed` entry ends that dispatch-local lifetime. A closed child is validated
+off-table during replay without reopening a live session or rerunning hooks.
+Unsupported lifetimes are marked `unservable` when recorded. Replay validates
+the full lifetime sequence, live target identities, write eligibility, and field
+changes before applying recorded file effects. This does not provide filesystem
+rollback if a later file write fails.
+
+### Changes from v3 to v4
+
+Each tool dispatch records ordered, typed transcript field changes through the
+canonical transcript writer. `set`, `append`, and `remove` operations preserve
+the changes made by hooks and other transcript writers when the tool is served.
+
+### Changes from v2 to v3
+
+Run recordings include their durable state location so branch execution can
+redirect state into its isolated workspace.
+
+### Changes from v1 to v2
+
+`llm_call.request_digest` covers the whole model request rather than its former
+narrower shape. A v1 digest cannot be compared with a v2 digest as evidence of
+request identity.
 
 ## Fidelity oracle
 

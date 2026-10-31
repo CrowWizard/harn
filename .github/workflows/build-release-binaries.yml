@@ -1,4 +1,5 @@
 name: Build release binaries
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Build release binaries [{0}]', inputs.source_candidate && 'source-candidate' || inputs.benchmark_only && 'benchmark' || inputs.warm_cache_only && 'warm' || 'invalid') || 'Build release binaries' }}
 
 # Triggers, in order of importance:
 #
@@ -13,10 +14,9 @@ name: Build release binaries
 #      separate promotion workflow publishes exactly these files; nothing here
 #      creates a tag, a GitHub release, or a container.
 #
-#      This push is the only release candidate producer. The macOS smoke runs
-#      on a trusted host whose runner group admits this workflow only on
-#      refs/heads/main, so a candidate built on any other ref could never
-#      finish (.github/restricted-runner-groups.json).
+#      The macOS smoke runs on a trusted host whose runner group admits this
+#      workflow only on refs/heads/main, so a candidate built on any other ref
+#      could never finish (.github/restricted-runner-groups.json).
 #
 #   2. push main, any other commit — warm-cache-only mode. Runs the same build
 #      matrix to populate the per-target Swatinem rust-cache on main so the
@@ -31,7 +31,13 @@ name: Build release binaries
 #
 #   4. workflow_dispatch — warm_cache_only, benchmark_only size gates, or an
 #      explicit source_candidate on main. Source candidates reuse the full
-#      signed producer and checks; dispatches cannot trigger promotion.
+#      signed producer and checks. Promotion requests one itself while main
+#      owes a release and no candidate is in flight.
+#
+#      While main declares an unpublished stable version, a source candidate
+#      (trigger 3 or 4) is a release candidate of that version: it runs the
+#      consumer rehearsal and native qualification, and promotion publishes
+#      whichever main candidate of the version qualifies first.
 #
 #   5. merge_group — builds nothing. A group whose head is a release commit
 #      runs the exact-source consumer rehearsal at the commit that lands, and
@@ -292,7 +298,7 @@ jobs:
                 echo "::notice::Reusing live source candidate run $LIVE_CANDIDATE_RUN at $GITHUB_SHA."
               fi
             fi
-            echo "::notice::Signed source candidate $GITHUB_SHA uses the existing full candidate producer. Source candidate events cannot publish a release."
+            echo "::notice::Signed source candidate $GITHUB_SHA uses the existing full candidate producer."
           elif [[ "$INPUT_BENCHMARK_ONLY" == "true" ]]; then
             if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
               echo "::error::benchmark_only is only valid for workflow_dispatch"
@@ -369,7 +375,7 @@ jobs:
             fi
             RELEASE_COMMITS="$(release_range_release_commits "$PUSH_BASE" "$GITHUB_SHA")"
             if [[ -n "$RELEASE_COMMITS" && "$RELEASE_COMMITS" != "$GITHUB_SHA" ]]; then
-              echo "::error::This push lands release commit(s) ${RELEASE_COMMITS//$'\n'/, } below its head $GITHUB_SHA. A release is built and promoted only from the head of its push, so nothing was built or promoted. Recover it with a source_candidate dispatch on main and manual promotion recovery (docs/src/maintainer-release.md)."
+              echo "::error::This push lands release commit(s) ${RELEASE_COMMITS//$'\n'/, } below its head $GITHUB_SHA. A release is built and promoted only from the head of its push, so nothing was built or promoted. Promotion requests a source candidate of main while the version is unpublished (docs/src/maintainer-release.md)."
               exit 1
             fi
             if [[ "$RELEASE_COMMITS" == "$GITHUB_SHA" ]]; then
@@ -431,6 +437,20 @@ jobs:
           if [[ "$BUILD_MODE" == candidate && "$CANDIDATE_PURPOSE" == none ]]; then
             CANDIDATE_PURPOSE=release
           fi
+          # The source's version decides the purpose, never the event: while
+          # main owes an unpublished stable version, a scheduled or requested
+          # main candidate is a release candidate and earns the same proofs.
+          if [[ "$BUILD_MODE" == candidate && "$CANDIDATE_PURPOSE" == source ]]; then
+            owed=0
+            release_version_is_owed "$GITHUB_REPOSITORY" "$VERSION" || owed=$?
+            case "$owed" in
+              0)
+                CANDIDATE_PURPOSE=release
+                echo "::notice::Main owes unpublished v$VERSION; this source candidate is a release candidate." ;;
+              1) ;;
+              *) echo "::error::Cannot read whether v$VERSION is published; candidate purpose is unproven."; exit 1 ;;
+            esac
+          fi
           if [[ "$BUILD_MODE" == candidate && "$CANDIDATE_PURPOSE" == release ]]; then
             REHEARSAL_SOURCE_SHA="$CANDIDATE_SOURCE_SHA"
           fi
@@ -468,10 +488,26 @@ jobs:
             echo "| Build matrix | \`$BUILD_MATRIX\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  source-security:
+    name: Candidate dependency security
+    needs: setup
+    if: needs.setup.outputs.build_mode == 'candidate'
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+      attestations: write
+    uses: burin-labs/.github/.github/workflows/dependency-security-proof.yml@502c1d9f2f110a9aa0d56ffd548cd06fe198608e
+    with:
+      source-revision: ${{ needs.setup.outputs.candidate_source_sha }}
+      policy: false
+
   source-ci:
     name: Qualify candidate source
-    needs: setup
-    if: needs.setup.outputs.should_build_binaries == 'true'
+    needs: [setup, source-security]
+    if: >-
+      !cancelled() && needs.setup.outputs.should_build_binaries == 'true' &&
+      (needs.setup.outputs.build_mode != 'candidate' || needs.source-security.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -1740,20 +1776,8 @@ jobs:
             --archives-dir "$archives" \
             --release-files-dir "$release_files"
           cat "$manifest_dir/candidate-manifest.json"
-          jq -n \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg sourceCommit "$SOURCE_COMMIT" \
-            --arg version "$VERSION" \
-            --arg runId "$GITHUB_RUN_ID" \
-            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
-            '{
-              schemaVersion: "harn.release_files_provenance.v1",
-              phase: "candidate",
-              repository: $repository,
-              sourceCommit: $sourceCommit,
-              version: $version,
-              workflow: {runId: $runId, runAttempt: $runAttempt}
-            }' > "$RUNNER_TEMP/release-files-provenance.json"
+          bash scripts/release_files_provenance.sh "$manifest_dir/candidate-manifest.json" "$VERSION" \
+            > "$RUNNER_TEMP/release-files-provenance.json"
           {
             echo "release_files=$release_files"
             echo "manifest=$manifest_dir/candidate-manifest.json"
@@ -1826,7 +1850,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # The residual release audit lanes (generated files, docs, grammar, security,
+  # The residual release audit lanes (generated files, docs, grammar,
   # smoke; owned by scripts/release_audit_contract.json) on the candidate's own
   # shipped Linux CLI. restore-candidate proves the executable came from the
   # archive the manifest records at this commit, and exports the identity the
@@ -1912,12 +1936,14 @@ jobs:
 
   consumer-rehearsal:
     name: Consumer release rehearsal
-    needs: [setup, build, collect_candidate_manifest, native-qualification]
+    # The observer admits the archive only after every smoke has passed, so wait for them here.
+    needs: [setup, build, collect_candidate_manifest, release-smoke, native-qualification]
     if: >-
       !cancelled() && needs.setup.result == 'success' && needs.setup.outputs.rehearsal_source_sha != '' &&
       (needs.setup.outputs.build_mode != 'candidate' ||
       (needs.build.result == 'success' && needs.collect_candidate_manifest.result == 'success' &&
-      (github.event_name == 'schedule' || needs.native-qualification.result == 'success')))
+      needs.release-smoke.result == 'success' &&
+      (needs.setup.outputs.candidate_purpose != 'release' || needs.native-qualification.result == 'success')))
     uses: ./.github/workflows/consumer-canary.yml
     with:
       source_revision: ${{ needs.setup.outputs.rehearsal_source_sha }}
@@ -1933,7 +1959,7 @@ jobs:
   native-qualification:
     name: Qualify native release source
     needs: [setup, source-ci]
-    if: needs.setup.outputs.build_mode == 'candidate' && github.event_name != 'schedule'
+    if: needs.setup.outputs.build_mode == 'candidate' && (github.event_name != 'schedule' || needs.setup.outputs.candidate_purpose == 'release')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -1976,7 +2002,7 @@ jobs:
   # reads.
   candidate-verdict:
     name: Release candidate verdict
-    needs: [setup, source-ci, prepare_cli_aot, build, collect_candidate_manifest, release-residual-audit, release-smoke, consumer-rehearsal, native-qualification]
+    needs: [setup, source-security, source-ci, prepare_cli_aot, build, collect_candidate_manifest, release-residual-audit, release-smoke, consumer-rehearsal, native-qualification]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -2010,12 +2036,12 @@ jobs:
             echo "This run builds no candidate (build mode ${BUILD_MODE:-unset})."
             exit 0
           fi
-          if [[ "$EVENT_NAME" != schedule && "$NATIVE_RESULT" != success ]]; then
+          if [[ ( "$EVENT_NAME" != schedule || "$CANDIDATE_PURPOSE" == release ) && "$NATIVE_RESULT" != success ]]; then
             echo "::error::Native release qualification finished ${NATIVE_RESULT:-missing}; candidate refused."
             exit 1
           fi
           if ! jq -e '
-            ["setup", "source-ci", "prepare_cli_aot", "build", "collect_candidate_manifest", "release-residual-audit", "release-smoke"] as $required |
+            ["setup", "source-security", "source-ci", "prepare_cli_aot", "build", "collect_candidate_manifest", "release-residual-audit", "release-smoke"] as $required |
             . as $jobs | all($required[]; $jobs[.].result == "success")
           ' <<<"$RESULTS" >/dev/null; then
             echo "::error::A candidate job did not succeed: $RESULTS"

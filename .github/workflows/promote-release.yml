@@ -1,22 +1,31 @@
 name: Promote release
+run-name: Promote release ${{ github.event.workflow_run.head_sha || inputs.candidate_sha }}
 
-# Publishes a release from the files the version commit's candidate run built
-# and checked. Nothing here builds a release file.
+# Publishes a release from the files a main candidate run built and checked.
+# Nothing here builds a release file.
 #
-#   1. build-release-binaries.yml builds, signs, attests, and checks the
-#      release candidate at exactly the version commit, and concludes success
-#      only when every release check passed on those files. The version
-#      commit's push to main is the only release producer.
-#   2. This workflow starts when the push run completes, or a maintainer
-#      recovers a certified run already contained in main. `plan` repeats the
-#      build's own version decision at the run's head commit. For a version
-#      commit it waits up to 90 minutes for the protected `green` branch to
-#      contain it, so only a commit whose full CI suite passed is published,
-#      then finds the successful run that built the candidate at that commit,
-#      so only a
-#      checked candidate is promoted and a warm-cache run is a no-op. A
-#      warm run on a stable version still unpublished hours after its version
-#      commit fails and opens one tracking issue instead of passing quietly.
+# Invariant: while main declares a stable version with no published release,
+# every successful main candidate of that version is promotable, whatever
+# event built it, and promotion keeps one candidate in flight until one
+# qualifies. A failed candidate never strands the version; a red source still
+# never publishes, because each candidate is gated on its own source's CI.
+#
+#   1. build-release-binaries.yml builds, signs, attests, and checks a
+#      candidate: at the version commit's push, at the daily schedule, or on
+#      request. It concludes success only when every release check passed on
+#      those files.
+#   2. This workflow starts when any main run of it completes, or a maintainer
+#      recovers a certified run already contained in main. `plan` proves the
+#      run's source declares the stable version through that version's
+#      transition in its first-parent history, then finds the successful run
+#      that built the candidate at that source. Before publishing it waits up
+#      to 90 minutes for the protected `green` branch to contain the source,
+#      so only a commit whose full CI suite passed is published. A release
+#      already published from another candidate is a no-op.
+#      When the run left nothing to promote, scripts/ci/release_candidate_reconcile.sh
+#      requests a source candidate of main if main still owes a release and
+#      none is in flight, and opens one tracking issue once main's newest
+#      commit has failed its candidate past the allowance.
 #   3. `promote` calls the organization's promote-release.yml, which proves
 #      the run passed at that commit, checks every file's sha256 and
 #      attestation against the candidate manifest, then creates the tag and the
@@ -61,7 +70,7 @@ on:
         type: boolean
   # Privileged `workflow_run` is intentional: the resolver executes trusted
   # main code and validates the producer before candidate source is read.
-  workflow_run: # zizmor: ignore[dangerous-triggers] promotes only main push runs of this repository
+  workflow_run: # zizmor: ignore[dangerous-triggers] promotes only main runs of this repository
     workflows: [Build release binaries]
     types: [completed]
     branches: [main]
@@ -81,7 +90,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
+      contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event.workflow_run.event) &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
@@ -116,6 +125,7 @@ jobs:
           COMPLETED_CONSUMER_RUN_ID: ${{ inputs.completed_consumer_run_id }}
           CONSUMER_PULL_REQUEST: ${{ inputs.consumer_pull_request }}
           STANDALONE_HARN: ${{ inputs.standalone_harn && 'true' || 'false' }}
+          RECOVERY: ${{ github.event_name == 'workflow_dispatch' }}
         run: bash scripts/resolve-release-promotion-source.sh
 
   plan:
@@ -126,11 +136,10 @@ jobs:
     permissions:
       contents: read
       actions: read
-      # Opens the tracking issue for a stable version left unpublished.
-      issues: write
     outputs:
       source_sha: ${{ needs.resolve.outputs.source_sha }}
       promote: ${{ steps.plan.outputs.promote }}
+      reconcile: ${{ steps.plan.outputs.reconcile }}
       run_id: ${{ steps.plan.outputs.run_id }}
       tag: ${{ steps.plan.outputs.tag }}
       version: ${{ steps.plan.outputs.version }}
@@ -177,34 +186,42 @@ jobs:
           source_directory="${SOURCE_DIRECTORY:-.}"
           version="$(release_workspace_version < "$source_directory/Cargo.toml")"
           previous="$(git -C "$source_directory" show HEAD^:Cargo.toml | release_workspace_version)"
-          if ! release_push_is_stable_version_change "$previous" "$version"; then
-            if [[ "${RECOVERY:-false}" == true ]]; then
-              if ! transition="$(cd "$source_directory" && release_recovery_transition "$HEAD_SHA" "$version")"; then
-                echo "::error::Requested recovery source has no proved stable release version transition in its first-parent history."
-                exit 1
-              fi
-              echo "::notice::Recovering corrected source $HEAD_SHA for stable transition $transition at $version."
-            else
-              echo "::notice::$HEAD_SHA keeps the workspace version at $version (was $previous); its run built no candidate, so there is nothing to promote."
-              echo "promote=false" >> "$GITHUB_OUTPUT"
-              # Nothing to promote must not hide a stable version main
-              # declared hours ago and never published.
-              VERSION="$version" bash scripts/ci/release_publication_overdue.sh
-              exit 0
+          # Nothing to promote: after an automatic run, the reconcile step keeps
+          # a candidate in flight while main still owes a release.
+          nothing_to_promote() {
+            echo "::notice::$1"
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+            [[ "${RECOVERY:-false}" == true ]] || echo "reconcile=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          # Any main source declaring a stable version is that version's
+          # candidate once its first-parent history proves the transition. The
+          # version commit proves it by itself.
+          if release_push_is_stable_version_change "$previous" "$version"; then
+            transition="$HEAD_SHA"
+          elif release_version_is_canonical "$version" && ! release_version_is_prerelease "$version"; then
+            if ! transition="$(cd "$source_directory" && release_recovery_transition "$HEAD_SHA" "$version")"; then
+              echo "::error::Source $HEAD_SHA has no proved stable release version transition in its first-parent history."
+              exit 1
             fi
+          elif [[ "${RECOVERY:-false}" == true ]]; then
+            echo "::error::Requested recovery source has no proved stable release version transition in its first-parent history."
+            exit 1
+          else
+            nothing_to_promote "$HEAD_SHA declares development version $version; there is nothing to promote."
           fi
           tag="v$version"
-          # A rerun of this workflow after the release exists is a no-op; a tag
-          # at any other commit is a conflict a person must resolve.
+          # A release already published from any source makes this a no-op; an
+          # unpublished tag at another commit is a conflict a person must resolve.
           if tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha 2>/dev/null)"; then
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::notice::$tag is already released from $tag_sha; nothing to promote."
+              echo "promote=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             if [[ "$tag_sha" != "$HEAD_SHA" ]]; then
               echo "::error::$tag already points at $tag_sha, not the candidate commit $HEAD_SHA."
               exit 1
-            fi
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "::notice::$tag is already released from $HEAD_SHA; nothing to promote."
-              echo "promote=false" >> "$GITHUB_OUTPUT"
-              exit 0
             fi
           fi
           # Main can explicitly retire a failed, never-published stable
@@ -219,10 +236,7 @@ jobs:
             echo "::error::Unpublished $tag is superseded by main's $main_version identity."
             exit 1
           fi
-          # Publish only a commit whose full CI suite passed: green must contain it.
-          green_wait_for "$GITHUB_REPOSITORY" "$HEAD_SHA" || exit 1
-          # The candidate was built by the version commit's push to main and is
-          # found by commit.
+          # The candidate is found by commit, whichever main event built it.
           if [[ "${RECOVERY:-false}" == true ]]; then
             candidate_run="$BUILD_RUN_ID"
           elif ! candidate_run="$(release_candidate_run_id "$GITHUB_REPOSITORY" "$HEAD_SHA")"; then
@@ -230,9 +244,16 @@ jobs:
             exit 1
           fi
           if [[ -z "$candidate_run" ]]; then
-            echo "::error::No successful build run holds a $tag candidate at $HEAD_SHA (this push's run $BUILD_RUN_ID built none)."
-            exit 1
+            if [[ "$HEAD_SHA" == "$transition" ]]; then
+              echo "::error::No successful build run holds a $tag candidate at $HEAD_SHA (this push's run $BUILD_RUN_ID built none)."
+              exit 1
+            fi
+            nothing_to_promote "Run $BUILD_RUN_ID built no $tag candidate at $HEAD_SHA (version commit $transition)."
           fi
+          # Publish only a commit whose full CI suite passed: green must contain it.
+          green_wait_for "$GITHUB_REPOSITORY" "$HEAD_SHA" || exit 1
+          [[ "$HEAD_SHA" == "$transition" ]] ||
+            echo "::notice::Promoting descendant $HEAD_SHA of $tag version commit $transition."
           if [[ -n "${CONSUMER_PULL_REQUEST:-}" && "${REQUIRES_ATTACHED_CONSUMER:-false}" == true ]]; then
             echo "::error::An explicit consumer repair cannot replace an originally dispatched completed child."
             exit 1
@@ -283,6 +304,64 @@ jobs:
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           WAIT_FOR_FULL_SUITE: 'true'
         run: bash scripts/ci/require_full_suite.sh
+
+  reconcile:
+    name: Keep release candidates moving
+    needs: [resolve, plan]
+    if: always() && (github.event_name == 'workflow_run' || needs.plan.outputs.reconcile == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: harn-release-candidate-reconcile
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Qualify reconciliation wake-up
+        id: wake
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLAN_RECONCILE: ${{ needs.plan.outputs.reconcile }}
+        run: node scripts/ci/release-reconcile-wake.mjs
+      - name: Mint candidate request token
+        id: reconcile-token
+        if: steps.wake.outputs.required == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-issues: write
+      - name: Mint recovery read authority
+        id: recovery-read
+        if: steps.wake.outputs.required == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            ${{ secrets.CONSUMER_CANARY_REPOSITORY }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Keep a candidate in flight while main owes a release
+        if: steps.wake.outputs.required == 'true'
+        env:
+          GH_TOKEN: ${{ steps.reconcile-token.outputs.token }}
+          SELF_RUN_ID: ${{ github.run_id }}
+          SOURCE_DIRECTORY: .
+          RELEASE_RECOVERY_READ_TOKEN: ${{ steps.recovery-read.outputs.token }}
+          CANARY_REPOSITORY: ${{ github.repository_owner }}/${{ secrets.CONSUMER_CANARY_REPOSITORY }}
+          CANARY_WORKFLOW: ${{ vars.CONSUMER_CANARY_WORKFLOW }}
+        run: MAIN_SHA="$(git rev-parse HEAD)" bash scripts/ci/release_candidate_reconcile.sh
 
   consumer-rehearsal:
     name: Recover missing consumer rehearsal
@@ -428,17 +507,34 @@ jobs:
         id: standalone
         run: echo 'ready=true' >> "$GITHUB_OUTPUT"
 
-  promote:
-    name: Promote
+  publication-security:
+    name: Fresh publication dependency security
     needs: [plan, authorize]
     if: >-
       !cancelled() && needs.plan.result == 'success' &&
       needs.authorize.result == 'success' && needs.authorize.outputs.ready == 'true'
     permissions:
       contents: read
+      issues: write
+      id-token: write
+      attestations: write
+    uses: burin-labs/.github/.github/workflows/dependency-security-proof.yml@502c1d9f2f110a9aa0d56ffd548cd06fe198608e
+    with:
+      source-revision: ${{ needs.plan.outputs.source_sha }}
+      policy: false
+
+  promote:
+    name: Promote
+    needs: [plan, authorize, publication-security]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      needs.authorize.result == 'success' && needs.authorize.outputs.ready == 'true' &&
+      needs.publication-security.result == 'success'
+    permissions:
+      contents: read
       actions: read
       attestations: read
-    uses: burin-labs/.github/.github/workflows/promote-release.yml@8f70b7c856dec371c1f7342c1616b912fa017a80
+    uses: burin-labs/.github/.github/workflows/promote-release.yml@ef4578faeb3462013fa74bb3915a455f1172c058
     with:
       sha: ${{ needs.plan.outputs.source_sha }}
       run-id: ${{ needs.plan.outputs.run_id }}
@@ -582,6 +678,8 @@ jobs:
     needs: [plan, promote]
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.promote.result == 'success' && !inputs.inspect_publication_only }}
     permissions:
+      actions: read
+      attestations: read
       contents: read
       pull-requests: read
     uses: ./.github/workflows/open-development-bump.yml

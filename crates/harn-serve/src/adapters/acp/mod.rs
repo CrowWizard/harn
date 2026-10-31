@@ -10,11 +10,13 @@
 //! `auth` owns ACP credential normalization, and `bridge` owns outbound host
 //! calls and update/log/progress emission.
 
+pub mod agent_event_payloads;
 mod auth;
 mod bridge;
 mod builtins;
 mod checkpoint_tracking;
 mod checkpoints;
+mod client_capabilities;
 mod commands;
 mod confinement;
 mod core;
@@ -34,9 +36,11 @@ mod module_progress;
 mod plan_documents;
 mod prompt;
 mod prompt_owner;
+pub mod replay_inputs;
 mod schema;
 mod session;
 mod session_inputs;
+mod session_options;
 mod session_state;
 mod session_watch;
 mod sessions;
@@ -47,6 +51,7 @@ mod task_admission;
 mod tests;
 mod transport;
 mod types;
+mod workspace_roots;
 
 use auth::acp_auth_request_for_method;
 pub fn is_supported_session_mode(mode_id: &str) -> bool {
@@ -70,7 +75,8 @@ pub use schema::{
     HARN_TOOL_LIFECYCLE_EXTENSION_FIELDS,
 };
 pub use sessions::{
-    acp_persisted_session_item, resolve_acp_session_project_root, AcpSessionProjectRootError,
+    acp_persisted_session_item, resolve_acp_session_project_root, try_acp_persisted_session_item,
+    AcpSessionProjectRootError,
 };
 use sessions::{
     cancel_session_command_handles, lookup_session_cancellation, preempt_session_interruption,
@@ -398,10 +404,16 @@ fn workspace_anchor_filter_matches(
         return false;
     };
     if let Some(raw) = filter.as_str() {
-        return anchor.primary.to_string_lossy() == raw;
+        return harn_vm::workspace_anchor::WorkspaceAnchor::canonicalize_path(
+            std::path::Path::new(raw),
+        )
+        .is_ok_and(|expected| expected == anchor.primary);
     }
     if let Some(primary) = filter.get("primary").and_then(serde_json::Value::as_str) {
-        return anchor.primary.to_string_lossy() == primary;
+        return harn_vm::workspace_anchor::WorkspaceAnchor::canonicalize_path(
+            std::path::Path::new(primary),
+        )
+        .is_ok_and(|expected| expected == anchor.primary);
     }
     harn_vm::workspace_anchor::WorkspaceAnchor::from_json(filter).is_ok_and(|expected| {
         expected.primary == anchor.primary && expected.additional_roots == anchor.additional_roots
@@ -917,6 +929,7 @@ impl AcpSandboxConfig {
             || !self.process.write_roots.is_empty()
             || self.process.allow_tcp_loopback
             || !self.process.unix_socket_roots.is_empty()
+            || self.process.ssh_agent_socket.is_some()
             || self.process.allow_child_workspace_write
     }
 
@@ -995,6 +1008,8 @@ struct VmBaselineCacheEntry {
 /// ACP server that reads JSON-RPC requests from a transport and writes
 /// responses / notifications back to that same transport.
 pub struct AcpServer {
+    replay_inputs: Option<Arc<replay_inputs::InputRecorder>>,
+    client_capabilities: client_capabilities::ClientCapabilities,
     launcher_environment: harn_vm::security::LauncherEnvironment,
     host_inference_boundary: Option<harn_vm::llm::api::InferenceBoundary>,
     machine_spend_quota: Option<harn_vm::llm::MachineSpendQuota>,

@@ -68,17 +68,29 @@ async fn run_interruptible(
         .is_some_and(|token| token.load(Ordering::SeqCst));
     let cancel = Arc::new(AtomicBool::new(cancelled));
     sources.cancel = Some(Arc::clone(&cancel));
-    let call = HostCallContext::new(CallAddress::current());
+    let address = CallAddress::current();
+    let call = HostCallContext::new(address.clone());
+    let completion = call.clone();
     let _cancel_on_drop = CancelOnDrop(cancel);
-    harn_vm::orchestration::run_blocking_with_ambient(move || {
+    let result = harn_vm::orchestration::run_blocking_with_ambient(move || {
         let _interrupt = sources.install();
+        let _session = address
+            .as_ref()
+            .map(|call| harn_vm::agent_sessions::enter_current_session(call.session_id.clone()));
+        let _tool_call = address.as_ref().map(|call| {
+            harn_vm::agent_sessions::enter_current_tool_call(call.tool_call_id.clone())
+        });
         let _call = call.enter();
         handler(&[request]).map_err(VmError::from)
     })
     .await
     .map_err(|error| {
         VmError::Runtime(format!("{builtin} blocking host operation failed: {error}"))
-    })?
+    })?;
+    if completion.tool_call_cancelled() {
+        return Err(VmError::ToolCallStopped);
+    }
+    result
 }
 
 #[derive(Clone)]
@@ -347,7 +359,13 @@ impl HostlibRegistry {
                         Box<dyn Future<Output = Result<VmValue, VmError>> + Send>,
                     > {
                         let handler = handler.clone();
+                        let background = args
+                            .first()
+                            .and_then(VmValue::as_dict)
+                            .is_some_and(crate::tools::run_command_request_is_background);
                         Box::pin(async move {
+                            let taped_args = args.clone();
+                            let live = Box::pin(async move {
                             let request = crate::schemas::validate_request_args(
                                 ambient_name,
                                 module,
@@ -441,6 +459,8 @@ impl HostlibRegistry {
                                     .map_err(VmError::from)
                                 }
                             }
+                            });
+                            harn_vm::run_tape::taped_command_run(ambient_name, &taped_args, background, live).await
                         })
                     }
                 });
@@ -573,6 +593,10 @@ impl HostlibRegistry {
         &self.modules
     }
 }
+
+#[cfg(test)]
+#[path = "registry_run_tape_tests.rs"]
+mod run_tape_tests;
 
 #[cfg(test)]
 mod tests {

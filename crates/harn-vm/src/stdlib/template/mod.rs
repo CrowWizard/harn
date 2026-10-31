@@ -53,23 +53,12 @@ pub use llm_context::{
 use render::{render_nodes, RenderCtx, Scope};
 
 // Thread-local registry of recent prompt renders keyed by `prompt_id`.
-// Populated by `render_with_provenance` so the DAP adapter can serve
-// `burin/promptProvenance` and `burin/promptConsumers` reverse queries
-// without forcing the pipeline author to pass the spans dict back up
-// through the bridge. Capped at 64 renders (FIFO) to bound memory.
+// Every asset render lands here so the DAP adapter can serve
+// its prompt provenance and prompt consumer reverse queries.
+// Capped at 64 renders (FIFO) to bound memory; the run tape keeps the
+// durable record.
 thread_local! {
     static PROMPT_REGISTRY: RefCell<Vec<RegisteredPrompt>> = const { RefCell::new(Vec::new()) };
-    // prompt_id -> [event_index...] where the prompt was consumed by
-    // an LLM call. Populated by emission sites once they thread the
-    // id alongside the rendered text; read by burin/promptConsumers
-    // to power the template gutter's jump-to-next-render action
-    // (#106). A per-session reset is handled by reset_prompt_registry.
-    static PROMPT_RENDER_INDICES: RefCell<BTreeMap<String, Vec<u64>>> =
-        const { RefCell::new(BTreeMap::new()) };
-    // Monotonic render ordinal driven by the prompt_mark_rendered
-    // builtin (#106). A fresh thread-local counter since the IDE
-    // correlates ordinals to event_indices at render time.
-    static PROMPT_RENDER_ORDINAL: RefCell<u64> = const { RefCell::new(0) };
 }
 
 const PROMPT_REGISTRY_CAP: usize = 64;
@@ -80,17 +69,15 @@ pub struct RegisteredPrompt {
     pub template_uri: String,
     pub rendered: String,
     pub spans: Vec<PromptSourceSpan>,
+    /// Content identity shared with the run tape's prompt-render record.
+    pub render_id: String,
 }
 
-/// Record a provenance map in the thread-local registry and return the
-/// assigned `prompt_id`. Newest entries push to the back; when the cap
-/// is reached the oldest entry is dropped so the registry never grows
-/// unboundedly over long sessions.
-pub fn register_prompt(
-    template_uri: String,
-    rendered: String,
-    spans: Vec<PromptSourceSpan>,
-) -> String {
+/// Record one render's provenance on the run tape and in the thread-local
+/// registry, and return the assigned `prompt_id`. Newest entries push to the
+/// back; when the cap is reached the oldest entry is dropped.
+fn register_prompt(template_uri: String, rendered: String, spans: Vec<PromptSourceSpan>) -> String {
+    let render_id = crate::run_tape::record_prompt_render(&template_uri, &rendered, &spans);
     let prompt_id = format!("prompt-{}", next_prompt_serial());
     PROMPT_REGISTRY.with(|reg| {
         let mut reg = reg.borrow_mut();
@@ -102,6 +89,7 @@ pub fn register_prompt(
             template_uri,
             rendered,
             spans,
+            render_id,
         });
     });
     prompt_id
@@ -185,37 +173,17 @@ pub fn lookup_prompt_consumers(
     })
 }
 
-/// Record a render event index against a prompt_id (#106). The
-/// scrubber's jump-to-render action walks this map to move the
-/// playhead to the AgentEvent where the template was consumed.
-/// Stored as a Vec so re-renders of the same prompt id accumulate.
-pub fn record_prompt_render_index(prompt_id: &str, event_index: u64) {
-    PROMPT_RENDER_INDICES.with(|map| {
-        map.borrow_mut()
-            .entry(prompt_id.to_string())
-            .or_default()
-            .push(event_index);
-    });
-}
-
-/// Produce the next monotonic ordinal for a render-mark. Pipelines
-/// invoke the `prompt_mark_rendered` builtin which calls this to
-/// obtain a sequence number without having to know about per-session
-/// event counters. The IDE scrubber orders matching consumers by
-/// this ordinal when the emitted_at_ms timestamps collide.
-pub fn next_prompt_render_ordinal() -> u64 {
-    PROMPT_RENDER_ORDINAL.with(|c| {
-        let mut n = c.borrow_mut();
-        *n += 1;
-        *n
-    })
-}
-
-/// Fetch every event index where `prompt_id` was rendered. Called
-/// by the DAP adapter to populate the `eventIndices` list in the
-/// `burin/promptConsumers` response.
+/// The model calls (1-based run-tape call indices) whose request contained
+/// `prompt_id`'s rendered text. Feeds `eventIndices` in the DAP prompt
+/// consumer response; empty when no run tape is recording.
 pub fn prompt_render_indices(prompt_id: &str) -> Vec<u64> {
-    PROMPT_RENDER_INDICES.with(|map| map.borrow().get(prompt_id).cloned().unwrap_or_default())
+    let render_id = PROMPT_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .find(|p| p.prompt_id == prompt_id)
+            .map(|p| p.render_id.clone())
+    });
+    render_id.map_or_else(Vec::new, |id| crate::run_tape::render_consumers(&id))
 }
 
 /// Clear the registry. Wired into `reset_thread_local_state` so tests
@@ -223,8 +191,6 @@ pub fn prompt_render_indices(prompt_id: &str) -> Vec<u64> {
 pub(crate) fn reset_prompt_registry() {
     PROMPT_REGISTRY.with(|reg| reg.borrow_mut().clear());
     PROMPT_SERIAL.with(|s| *s.borrow_mut() = 0);
-    PROMPT_RENDER_INDICES.with(|map| map.borrow_mut().clear());
-    PROMPT_RENDER_ORDINAL.with(|c| *c.borrow_mut() = 0);
     llm_context::reset_llm_render_stack();
     if let Some(cache) = LLM_SHADOW_WARN_CACHE.get() {
         if let Ok(mut g) = cache.lock() {
@@ -322,7 +288,7 @@ pub fn render_template_to_string(
 /// expression's runtime value when it's a scalar; omitted for
 /// structural nodes (if/for/include) so callers don't log a giant
 /// dict display for a single `{% for %}`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PromptSourceSpan {
     pub template_line: usize,
     pub template_col: usize,
@@ -343,6 +309,9 @@ pub struct PromptSourceSpan {
     /// `parent_span` chain. Defaults to empty string for callers that
     /// don't plumb it through.
     pub template_uri: String,
+    /// Content hash of that template's source at render time, so a reader
+    /// can tell whether `template_line` still points at the same text.
+    pub template_revision: String,
 }
 
 /// One conditional or section decision recorded during a template
@@ -385,7 +354,8 @@ impl BranchKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptSpanKind {
     /// Literal template text between directives.
     Text,
@@ -394,6 +364,7 @@ pub enum PromptSpanKind {
     Expr,
     /// Legacy bare `{{ident}}` fallthrough, surfaced separately so the
     /// IDE can visually distinguish resolved from pass-through.
+    #[serde(rename = "legacy_bare")]
     LegacyBareInterp,
     /// Conditional branch text that actually rendered (the taken branch).
     If,
@@ -426,7 +397,8 @@ pub fn render_asset_result(
     asset: &TemplateAsset,
     bindings: Option<&crate::value::DictMap>,
 ) -> Result<String, TemplateError> {
-    let (rendered, _spans) = render_asset_with_provenance_result(asset, bindings, false)?;
+    let (rendered, spans) = render_asset_with_provenance_result(asset, bindings, true)?;
+    register_prompt(asset.uri.clone(), rendered.clone(), spans);
     Ok(rendered)
 }
 
@@ -474,6 +446,8 @@ fn render_asset_with_provenance_and_trace_result(
     collect_provenance: bool,
     force_branch_trace: bool,
 ) -> Result<(String, Vec<PromptSourceSpan>, Vec<BranchDecision>), TemplateError> {
+    let prepared = asset.for_render()?;
+    let asset = prepared.as_ref();
     let nodes = parse_cached(asset)?;
     let mut out = String::with_capacity(asset.source.len());
     // Materialize the ambient `llm` binding when the caller is inside
@@ -489,12 +463,10 @@ fn render_asset_with_provenance_and_trace_result(
     // (capability-adaptive rendering), and the empty-trace events
     // would otherwise spam every doc-gen / CI render.
     let llm_ctx = current_llm_render_context();
-    let mut rc = RenderCtx {
-        current_asset: asset.clone(),
-        include_stack: Vec::new(),
-        current_include_parent: None,
-        branch_trace: (force_branch_trace || llm_ctx.is_some()).then(Vec::new),
-    };
+    let mut rc = RenderCtx::new(
+        asset,
+        (force_branch_trace || llm_ctx.is_some()).then(Vec::new),
+    );
     let mut spans = if collect_provenance {
         Some(Vec::new())
     } else {

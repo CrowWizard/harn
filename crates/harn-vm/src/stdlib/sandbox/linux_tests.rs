@@ -8,6 +8,9 @@ use crate::stdlib::sandbox::{effective_fallback, handler_sandbox_test_guard, San
 #[path = "linux_process_introspection_tests.rs"]
 mod process_introspection;
 
+#[path = "linux_ssh_agent_tests.rs"]
+mod ssh_agent;
+
 /// Every right a write could use, through truncation.
 fn write_bits() -> FsAccess {
     AccessFs::from_write(ABI::V3)
@@ -985,6 +988,38 @@ fn report_default_denylist_expansion_cost() {
         "[landlock-cost] measured '{}' with only {entries} entries, which is not a real home; \
          the cap check would pass vacuously. Something rewrote HOME under this test.",
         home.display()
+    );
+}
+
+#[test]
+fn expansion_limit_names_the_directory_that_was_enumerated() {
+    let temp = tempfile::TempDir::new().expect("temp");
+    let root = temp.path().canonicalize().expect("canonical");
+    let next_component = root.join("denied");
+    std::fs::create_dir(&next_component).expect("denied parent");
+    for index in 0..=MAX_DENY_EXPANSION_RULES {
+        std::fs::create_dir(root.join(format!("sibling-{index}"))).expect("allowed sibling");
+    }
+    let denied = next_component.join("secret");
+
+    let error = expand_around_denied(&root, std::slice::from_ref(&denied))
+        .expect_err("more than the expansion ceiling must be refused");
+    let error = error.to_string();
+
+    assert!(
+        error.contains(&format!("produced {} rules", MAX_DENY_EXPANSION_RULES + 1)),
+        "the fixture must exercise the actual expansion ceiling: {error}"
+    );
+    assert!(
+        error.contains(&format!("directory that expanded was '{}'", root.display())),
+        "the diagnostic must name the directory whose entries were enumerated: {error}"
+    );
+    assert!(
+        !error.contains(&format!(
+            "directory that expanded was '{}'",
+            next_component.display()
+        )),
+        "the diagnostic must not blame the next denied-path component: {error}"
     );
 }
 
