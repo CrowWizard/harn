@@ -711,8 +711,12 @@ The ACP server supports these JSON-RPC methods:
 
 ACP sessions are conversation/execution contexts. Harn extends `session/new`
 and `session/fork` with an optional `environmentPolicy`; this field is not part
-of the base ACP specification. Omission on `session/new` and cold `session/load`
-means `inherited`.
+of the base ACP specification. On `session/new`, a client-supplied policy wins;
+otherwise `--session-environment inherited|isolated` can state the operator's
+choice for standard ACP editors. If neither is supplied, the policy defaults
+to `inherited`. The result reports the applied policy as
+`environmentPolicy: {kind, source}`, where `source` is `client`, `launcher`, or
+`default`. A `session/fork` that omits it keeps its parent's environment.
 
 ```json
 {

@@ -86,8 +86,8 @@ pub(super) fn child_sees_restore_canary(
     }
 }
 
-/// A `session/new` that omits the extension field uses the compatibility
-/// default, `inherited`.
+/// A `session/new` that omits the extension field uses the inherited
+/// compatibility default when the operator has not stated a policy.
 #[tokio::test(flavor = "current_thread")]
 async fn session_new_defaults_an_omitted_environment_policy_to_inherited() {
     harn_vm::reset_thread_local_state();
@@ -109,6 +109,10 @@ async fn session_new_defaults_an_omitted_environment_policy_to_inherited() {
         server.sessions[session_id].environment_policy.kind(),
         harn_vm::security::EnvironmentPolicyKind::Inherited
     );
+    assert_eq!(
+        created["result"]["environmentPolicy"],
+        serde_json::json!({"kind": "inherited", "source": "default"})
+    );
 
     // Explicit policies remain available.
     server
@@ -126,8 +130,55 @@ async fn session_new_defaults_an_omitted_environment_policy_to_inherited() {
     );
 }
 
+/// A standard ACP editor cannot send `environmentPolicy`. When the operator
+/// stated a policy at launch, its plain `session/new` opens under that policy
+/// and the response says so; a policy the client does send still wins.
+#[tokio::test(flavor = "current_thread")]
+async fn a_launcher_stated_policy_admits_a_client_that_names_none() {
+    use harn_vm::security::EnvironmentPolicyKind;
+
+    harn_vm::reset_thread_local_state();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let config = AcpServerConfig::new(None)
+        .with_launcher_session_environment(EnvironmentPolicyKind::Isolated);
+    let mut server = AcpServer::new_with_output(config, AcpOutput::Channel(tx));
+
+    server
+        .handle_incoming_message(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new",
+            "params": {"cwd": ".", "mcpServers": []},
+        }))
+        .await;
+    let created = recv_json(&mut rx).await;
+    let id = created["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a plain session/new must open, got {created}"))
+        .to_string();
+    assert_eq!(
+        created["result"]["environmentPolicy"],
+        serde_json::json!({"kind": "isolated", "source": "launcher"})
+    );
+    assert_eq!(
+        server.sessions[&id].environment_policy.kind(),
+        EnvironmentPolicyKind::Isolated
+    );
+
+    server
+        .handle_incoming_message(serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "session/new",
+            "params": {"cwd": ".", "environmentPolicy": {"kind": "inherited"}},
+        }))
+        .await;
+    let stated = recv_json(&mut rx).await;
+    assert_eq!(
+        stated["result"]["environmentPolicy"],
+        serde_json::json!({"kind": "inherited", "source": "client"})
+    );
+}
+
 /// A canonical history record cannot grant launcher credentials to a new
-/// process. A cold load defaults to inherited; a live replay cannot widen it.
+/// process. A cold load uses the explicit/default policy; a live replay cannot
+/// widen it.
 #[test]
 fn cold_load_requires_authority_and_live_load_cannot_replace_it() {
     use harn_session_store::{CreateSession, SessionStore};
@@ -162,6 +213,7 @@ fn cold_load_requires_authority_and_live_load_cannot_replace_it() {
                 "environmentPolicy": {"kind": "inherited", "grants": []},
             }),
             &harn_vm::security::LauncherEnvironment::capture(),
+            None,
         )
         .unwrap();
         assert!(child_sees_restore_canary(&inherited));

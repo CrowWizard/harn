@@ -57,11 +57,12 @@ function pullRequestContext({
   baseRef = "main",
   labels = [{ name: "ship" }],
   changedLabel = "ship",
-  selected = "42",
+  stopSwitch = "on",
 } = {}) {
   return {
     github: {
       repository,
+      repository_id: "1192706077",
       ref: "refs/heads/topic",
       event_name: eventName,
       event: {
@@ -75,15 +76,19 @@ function pullRequestContext({
         },
       },
     },
-    vars: { HARN_SMART_SHIP_PR: selected },
+    vars: { HARN_SMART_SHIP: stopSwitch },
     inputs: { pr: "" },
   };
 }
 
-test("the shipped caller admits only the selected same-repository main PR", () => {
+test("the shipped caller admits every same-repository main PR labeled ship", () => {
   assert.equal(admits(pullRequestContext()), true);
+  assert.equal(
+    admits(pullRequestContext({ number: 43 })),
+    true,
+    "every ship PR wakes the merger on its own events",
+  );
   for (const [name, change] of [
-    ["a different PR", { number: 43 }],
     ["a fork head", { headRepository: "contributor/harn" }],
     ["a foreign base repository", { baseRepository: "contributor/harn" }],
     ["a non-main base", { baseRef: "release" }],
@@ -115,29 +120,36 @@ test("the shipped caller admits only a deliberate stop event when ship is remove
   );
 });
 
-test("the shipped caller refuses empty, invalid, nonpositive, and noncanonical selected PR values", () => {
-  for (const selected of ["", "x", "0", "-42", "42.5", "042", "null", "[]"]) {
+test("the shipped caller refuses every event unless the stop switch is on", () => {
+  // GitHub compares strings case-insensitively, so "ON" also admits.
+  for (const stopSwitch of ["", "off", "true", "42"]) {
     assert.equal(
-      admits(pullRequestContext({ selected })),
+      admits(pullRequestContext({ stopSwitch })),
       false,
-      `selected PR ${JSON.stringify(selected)} must be refused`,
+      `stop switch ${JSON.stringify(stopSwitch)} must refuse`,
     );
   }
+  const unset = pullRequestContext();
+  unset.vars = {};
+  assert.equal(admits(unset), false, "an unset stop switch must refuse");
 });
 
-test("the shipped caller dispatches only the selected PR from main", () => {
+test("the shipped caller dispatches one canonical PR number from main", () => {
   const context = pullRequestContext({ eventName: "workflow_dispatch" });
   context.github.ref = "refs/heads/main";
   context.inputs.pr = "42";
   assert.equal(admits(context), true);
-  assert.equal(admits({ ...context, inputs: { pr: "43" } }), false);
-  assert.equal(admits({ ...context, inputs: { pr: "" } }), false);
+  assert.equal(admits({ ...context, inputs: { pr: "43" } }), true);
+  // A blank dispatch would reach the shared hosted sweep.
+  for (const pr of ["", "x", "0", "-42", "42.5", "042", "null", "[]"]) {
+    assert.equal(
+      admits({ ...context, inputs: { pr } }),
+      false,
+      `dispatch PR ${JSON.stringify(pr)} must be refused`,
+    );
+  }
   assert.equal(
-    admits({
-      ...context,
-      inputs: { pr: "42.5" },
-      vars: { HARN_SMART_SHIP_PR: "42.5" },
-    }),
+    admits({ ...context, vars: { HARN_SMART_SHIP: "off" } }),
     false,
   );
   assert.equal(
@@ -149,17 +161,43 @@ test("the shipped caller dispatches only the selected PR from main", () => {
   );
 });
 
-test("the shipped caller accepts only the selected owned pull request workflow run", () => {
-  const context = pullRequestContext({ eventName: "workflow_run" });
+test("the shipped caller admits the actual owned pull request workflow run", () => {
+  const context = pullRequestContext({
+    eventName: "workflow_run",
+    number: 10885,
+  });
   context.github.event = {
     workflow_run: {
       event: "pull_request",
       head_repository: { full_name: repository },
       pull_requests: [
-        { number: 42, base: { repo: { full_name: repository }, ref: "main" } },
+        {
+          number: 10885,
+          base: {
+            repo: {
+              id: 1192706077,
+              name: "harn",
+              url: "https://api.github.com/repos/burin-labs/harn",
+            },
+            ref: "main",
+          },
+        },
       ],
     },
   };
+  assert.equal(
+    context.github.event.workflow_run.pull_requests[0].base.repo.full_name,
+    undefined,
+    "the actual workflow_run base repository shape has no full_name",
+  );
+  assert.equal(
+    evaluate(
+      "github.event.workflow_run.pull_requests[0].base.repo.full_name == github.repository",
+      context,
+    ).coerceString(),
+    "false",
+    "the previous admission check rejects the actual workflow_run payload",
+  );
   assert.equal(admits(context), true);
   assert.equal(
     admits({
@@ -201,8 +239,60 @@ test("the shipped caller accepts only the selected owned pull request workflow r
             ...context.github.event.workflow_run,
             pull_requests: [
               {
-                number: 43,
-                base: { repo: { full_name: repository }, ref: "main" },
+                ...context.github.event.workflow_run.pull_requests[0],
+                base: {
+                  ...context.github.event.workflow_run.pull_requests[0].base,
+                  repo: { id: 1, name: "harn", url: "https://example.test" },
+                },
+              },
+            ],
+          },
+        },
+      },
+    }),
+    false,
+    "a foreign base repository id must be refused",
+  );
+  assert.equal(
+    admits({
+      ...context,
+      github: {
+        ...context.github,
+        event: {
+          workflow_run: {
+            ...context.github.event.workflow_run,
+            pull_requests: [
+              {
+                ...context.github.event.workflow_run.pull_requests[0],
+                number: 10886,
+              },
+            ],
+          },
+        },
+      },
+    }),
+    true,
+    "every pull request CI completion wakes the merger",
+  );
+  assert.equal(
+    admits({ ...context, vars: { HARN_SMART_SHIP: "off" } }),
+    false,
+  );
+  assert.equal(
+    admits({
+      ...context,
+      github: {
+        ...context.github,
+        event: {
+          workflow_run: {
+            ...context.github.event.workflow_run,
+            pull_requests: [
+              {
+                ...context.github.event.workflow_run.pull_requests[0],
+                base: {
+                  ...context.github.event.workflow_run.pull_requests[0].base,
+                  ref: "release",
+                },
               },
             ],
           },
@@ -219,23 +309,33 @@ test("the shipped caller accepts only the selected owned pull request workflow r
         event: {
           workflow_run: {
             ...context.github.event.workflow_run,
-            pull_requests: [
-              {
-                number: 42,
-                base: { repo: { full_name: repository }, ref: "release" },
-              },
-            ],
+            pull_requests: [],
           },
         },
       },
     }),
     false,
+    "a missing associated pull request must be refused",
   );
 });
 
-test("the shipped workflow exposes one selected PR and no scheduled sweep", () => {
+test("the shipped workflow exposes a one-PR dispatch and no scheduled sweep", () => {
   assert.equal(workflow.on.schedule, undefined);
-  assert.deepEqual(workflow.on.workflow_run.workflows, ["CI"]);
+  assert.deepEqual(workflow.on.workflow_run.workflows, [
+    "CI",
+    "Build release binaries",
+  ]);
+  const producer = load(
+    fs.readFileSync(
+      `${root}/.github/workflows/build-release-binaries.yml`,
+      "utf8",
+    ),
+  );
+  assert.equal(producer.name, "Build release binaries");
+  assert.ok(
+    producer.on.pull_request !== undefined,
+    "the release verdict must run on pull requests to wake Smart Ship",
+  );
   assert.equal(workflow.on.workflow_dispatch.inputs.pr.required, true);
   assert.equal(workflow.on.workflow_dispatch.inputs.pr.default, undefined);
   assert.match(

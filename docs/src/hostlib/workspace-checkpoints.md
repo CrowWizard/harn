@@ -15,7 +15,7 @@ detail}` from every method, never an empty success.
 | Method | Result |
 |--------|--------|
 | `harness.fs.checkpoint_capture(request)` | Record a boundary. Request: `{session_id, boundary_id, root?}`. |
-| `harness.fs.checkpoint_call_begin(request)` | Stat the tree before a tool or shell call. Request: `{session_id, call_id}`. |
+| `harness.fs.checkpoint_call_begin(request)` | Stat the files git lists as changed before a tool or shell call. Request: `{session_id, call_id}`. |
 | `harness.fs.checkpoint_call_end(request)` | Stat again and attribute each changed path, with its post-call hash, to the call. Request: `{session_id, call_id, side_effect?}`. |
 | `harness.fs.checkpoint_plan(request)` | The restore plan to a boundary, without touching files. Request: `{session_id, boundary_id}`. |
 | `harness.fs.checkpoint_restore(request)` | Execute the plan and return the receipt. Request: `{session_id, boundary_id, paths?}`; `paths` must be non-empty when present, and omitting it restores every attributed path. |
@@ -49,7 +49,9 @@ other platforms.
 `{sessionId, action, boundaryId?, callId?, sideEffect?, paths?}` where `action`
 is `capture`, `call_begin`, `call_end`, `plan`, `restore`, or `drop`. The root is
 the session's cwd, and the result is the same typed object the `harness.fs`
-method returns. `session/close` drops the session's checkpoint state.
+method returns. `session/close` releases an idle session's checkpoint state from
+memory and keeps its record on disk for a later `session/load`; only the `drop`
+action deletes the record.
 
 Set `workspaceCheckpoint: true` on `session/new` or a cold `session/load` to
 capture a boundary when a prompt starts a turn. The prompt must carry a
@@ -62,8 +64,10 @@ field as enabled. Captures can be unavailable without blocking the prompt.
 Query `plan` before offering file restoration; a failed
 capture returns `{available: false, reason: "capture_failed"}` from `plan`
 and `restore`, even if an older boundary used that ID. Loading an already-live
-session cannot change its tracking setting. A cold load starts a new in-memory
-checkpoint history; it doesn't restore earlier file boundaries. A steer
+session cannot change its tracking setting. Loading an opted-in session that
+this process does not hold resumes the checkpoint history an earlier process
+recorded under the session's root, so a restarted host can still plan and
+restore against earlier boundaries. A steer
 inserted into a running turn captures its own boundary immediately before its
 message enters the transcript. If a tool call is still in flight or capture
 otherwise fails, `plan` and `restore` report `capture_failed` for that message.
@@ -83,20 +87,47 @@ the parent's checkpoint history was copied to the new session. An unavailable
 result is explicit and does not prevent the conversation fork. The copy has
 independent checkpoint state and stored files, so restoring it or closing the
 parent does not change the other branch's history. Forks without this option
-do not copy checkpoints. Checkpoint state is still in memory and does not
-survive a server restart.
+do not copy checkpoints.
+
+Each session records its boundaries, attributed calls, revision, and typed
+complete or incomplete state in one index beside its stored files. A tracked
+tool call is admitted only after the incomplete state is durably written; its
+attribution is recorded before the index becomes complete again. A host restart
+between those writes makes `resume`, `plan`, and `restore` report
+`checkpoint_interrupted` until the checkpoint is dropped. A failed begin write
+refuses the tool before its handler runs. If the index write fails before
+replacement, the prior complete index remains available. If replacement
+occurred but namespace durability could not be confirmed, a cold resume treats
+the visible incomplete index as interrupted. A failed final call or restore
+write keeps the index incomplete and returns the effect receipt with
+`persistence_error`, so a completed workspace mutation is not mistaken for a
+failed one. Embedding hosts use
+`workspace_checkpoint::resume(session_id, root)` to load a complete record and
+`workspace_checkpoint::unload(session_id)` to release it from memory while
+keeping its record. Both the file contents and the namespace replacement must
+be confirmed durable before a tracked tool is allowed to run.
 
 ## What a boundary stores
 
-- The stat index (path, size, mtime in nanoseconds, inode) of the non-ignored
-  tree, held in memory as the attribution baseline.
+- The stat index (path, size, mtime in nanoseconds, inode) of every file
+  `git status` lists: changed against HEAD in the index or on disk, or
+  untracked and not ignored. It is held in memory as the attribution baseline.
+  A file git does not list matches HEAD, so the scan never reads clean files.
+  Files flagged assume-unchanged or skip-worktree (including flags that
+  `core.ignorestat` sets) are stat'd directly, because `git status` does not
+  check them, and the scan's `git status` runs without a filesystem monitor.
 - A git tree written from the index. Clean tracked files resolve from the
   repository's object store.
 - Bytes only for files that differ from the index: modified and untracked
   files, content-addressed under `.harn/state/checkpoints/<session>/blobs/`.
   A file above 64 MiB or a dirty symlink is listed as unrestorable.
 
-A scan of about 10,000 files takes roughly 45 ms warm.
+A scan costs about as much as `git status` on the same tree. When HEAD moves
+during a call (a checkout, reset, or commit), the scan also diffs the two HEAD
+commits, so clean files the move rewrote are still attributed. Capture reuses
+the stored hash of a dirty file whose stat is unchanged since the previous
+boundary instead of reading it again. Outside a git worktree, run-tape effect
+scans walk every non-ignored file instead.
 
 ## Restore plan and guard
 
@@ -153,8 +184,11 @@ began at, is what tells two such effects apart.
   post-call hash.
 - A same-size edit inside one filesystem mtime tick is invisible to the stat
   diff.
-- Symlinks, nested repositories, and tracked files that an ignore rule matches
-  are outside the index.
+- Symlinks and nested repositories are outside the index.
+- A file that an ignore rule matches and git does not track is outside the
+  index, so an ignored file a call writes is neither attributed nor removed.
+- A directory or file git cannot read makes the scan incomplete: capture is
+  unavailable, and a call that ran while it was unreadable cannot be restored.
 - Declared Harn runtime state is not a workspace edit. This includes the
   session database and sidecars, writer locks, checkpoints, and scanner state,
   including source-relative state in nested directories. Other `.harn` files
@@ -162,5 +196,6 @@ began at, is what tells two such effects apart.
 - Clean tracked content depends on the git objects for the boundary's index
   staying in the object store. Garbage collection can remove them after the
   index moves on.
-- State is in memory. Stored files live with the session and are removed by
-  `checkpoint_drop`.
+- The index and stored files live under the session's root and are removed by
+  `checkpoint_drop`. A call in flight when the process exits cannot be
+  attributed; its incomplete index is refused on restart and must be dropped.
