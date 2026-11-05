@@ -303,17 +303,6 @@ fn agent_event_ext_fixture_events() -> Vec<AgentEvent> {
             session_id: "session-1".to_string(),
             run: failed_error,
         },
-        AgentEvent::CompassRoutingDecision {
-            session_id: "session-1".to_string(),
-            tool_call_id: "tool-edit-1".to_string(),
-            mode: "rewrite".to_string(),
-            action: "rewritten".to_string(),
-            persona: "fixer".to_string(),
-            original_tool: "str_replace".to_string(),
-            routed_tool: "edit_safe_text_patch".to_string(),
-            target_tool: "edit_safe_text_patch".to_string(),
-            path: Some("src/lib.rs".to_string()),
-        },
         AgentEvent::SessionClosed {
             session_id: "session-1".to_string(),
             reason: "timeout".to_string(),
@@ -321,22 +310,6 @@ fn agent_event_ext_fixture_events() -> Vec<AgentEvent> {
             metadata: serde_json::json!({"idle_ms": 5000}),
         },
         observation_fixtures::fixture_judge_decision(),
-        AgentEvent::StructuralValidatorDecision {
-            session_id: "session-1".to_string(),
-            iteration: 1,
-            rule: "non_empty_when_writes_expected".to_string(),
-            diagnostic: "Assistant emitted no tool calls while writable tools were available."
-                .to_string(),
-            recommended_action:
-                "Emit the concrete write or edit tool call needed for the task, or only mark the task done after that work is complete."
-                    .to_string(),
-            vetoed: true,
-            skipped: false,
-            reason: None,
-            on_failure: "regenerate_with_feedback".to_string(),
-            attempts: 0,
-            max_attempts: 3,
-        },
         AgentEvent::TypedCheckpoint {
             session_id: "session-1".to_string(),
             checkpoint: serde_json::json!({
@@ -451,7 +424,7 @@ fn agent_event_ext_fixture_events() -> Vec<AgentEvent> {
         },
         observation_fixtures::fixture_session_health(),
     ];
-    drop(events.splice(14..14, registration_fixtures::events()));
+    drop(events.splice(13..13, registration_fixtures::events()));
     let mut events = schema_contract::with_purpose_label(events);
     events.extend(turn_phase::fixture_events());
     events
@@ -1145,6 +1118,7 @@ async fn bridge_progress_and_log_session_updates_namespace_vendor_fields() {
                 assistant_state: std::sync::Mutex::new(
                     harn_vm::visible_text::VisibleTextState::default(),
                 ),
+                host_responder: None,
             });
 
             bridge.send_progress(

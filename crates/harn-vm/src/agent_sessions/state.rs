@@ -6,6 +6,7 @@ impl SessionState {
         let now = Instant::now();
         let transcript = empty_transcript(&id);
         Self {
+            continuation_checkpoint: None,
             admission_role: SessionAdmissionRole::Admitted,
             transcript_recording_ready: false,
             retention: Arc::new(()),
@@ -26,8 +27,6 @@ impl SessionState {
             last_withdrawal_reason: None,
             workspace_policy: WorkspacePolicy::default(),
             workspace_anchor: None,
-            scratchpad: None,
-            scratchpad_version: 0,
             goal: SessionGoalState::default(),
             goal_pending_fork: false,
             transcript_budget_policy: default_transcript_budget_policy(),
@@ -76,6 +75,13 @@ impl SessionState {
         self.transcript = transcript;
         self.touch();
         Ok(())
+    }
+
+    pub(super) fn reminder_state_snapshot(&self) -> crate::testbench::tape::ReminderStateSnapshot {
+        crate::testbench::tape::ReminderStateSnapshot {
+            revoked_ids: self.revoked_reminder_ids.iter().cloned().collect(),
+            expired_ids: self.expired_reminder_ids.iter().cloned().collect(),
+        }
     }
 
     /// Reject mutations once this run has queued its terminal boundary.

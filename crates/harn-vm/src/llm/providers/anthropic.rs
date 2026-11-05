@@ -14,6 +14,7 @@ pub(crate) use harn_llm::wire::anthropic::{
 };
 
 pub(crate) const ANTHROPIC_INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+pub(crate) const ANTHROPIC_THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// Anthropic beta header value that unlocks the native `computer_20251124`
 /// computer-use tool. Requested via the `anthropic-beta` header whenever a
@@ -320,6 +321,91 @@ pub(crate) fn reconcile_request_body(
         relower_disabled_thinking_override(body, &wire_model);
         clamp_effort_for_disabled_thinking(body, &wire_model);
     }
+}
+
+/// Keep valid signed reasoning while letting Anthropic discard blocks whose
+/// conversation prefix has changed. Only advertise this on catalogued routes
+/// and adaptive thinking: other thinking modes reject `block_binding`.
+///
+/// `between_tools` is one of those modes, yet still returns signed blocks that
+/// Anthropic rejects once the tool list changes. It is the thinking-off setting,
+/// so history drops them instead of risking a 400 on tool-surface narrowing.
+pub(crate) fn prepare_thinking_binding(
+    body: &mut serde_json::Value,
+    provider: &str,
+    fallback_model: &str,
+) -> bool {
+    if body
+        .pointer("/thinking/type")
+        .and_then(serde_json::Value::as_str)
+        == Some("between_tools")
+    {
+        remove_signed_reasoning(body);
+        return false;
+    }
+    let model = body
+        .get("model")
+        .map_or(fallback_model, |value| value.as_str().unwrap_or_default());
+    let supported = crate::llm::capabilities::lookup(provider, model)
+        .anthropic_beta_features
+        .iter()
+        .any(|feature| feature == ANTHROPIC_THINKING_BINDING_BETA);
+    let has_signed = body
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks
+                            .iter()
+                            .any(harn_llm::reasoning_history::is_signed_anthropic_block)
+                    })
+            })
+        });
+    if !supported || !has_signed {
+        return false;
+    }
+    let thinking = body.get("thinking");
+    let adaptive = thinking
+        .and_then(|value| value.get("type"))
+        .and_then(serde_json::Value::as_str)
+        == Some("adaptive")
+        || (thinking.is_none() && model_defaults_to_adaptive_thinking(model));
+    if !adaptive {
+        return false;
+    }
+    if body.get("thinking").is_none() {
+        body["thinking"] = serde_json::json!({"type":"adaptive"});
+    }
+    if body["thinking"].get("block_binding").is_none() {
+        body["thinking"]["block_binding"] =
+            serde_json::json!({"prefix_mismatch_behavior":"drop_block"});
+    }
+    true
+}
+
+fn remove_signed_reasoning(body: &mut serde_json::Value) {
+    let Some(messages) = body
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    messages.retain_mut(|message| {
+        let Some(blocks) = message
+            .get_mut("content")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return true;
+        };
+        let before = blocks.len();
+        blocks.retain(|block| !harn_llm::reasoning_history::is_signed_anthropic_block(block));
+        // A turn holding only reasoning has nothing left to send.
+        before == blocks.len() || !blocks.is_empty()
+    });
 }
 
 fn remove_unsupported_assistant_prefill(body: &mut serde_json::Value, provider: &str, model: &str) {

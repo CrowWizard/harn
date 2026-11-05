@@ -152,6 +152,7 @@ export const AGENT_TERMINAL_CLASSES = [
   "parse_dropped",
   "generic_throw",
   "managed_spend_paused",
+  "managed_allowance_unavailable",
 ] as const
 export type AgentTerminalClass = (typeof AGENT_TERMINAL_CLASSES)[number]
 
@@ -230,6 +231,7 @@ export const LLM_ERROR_REASONS = [
   "unknown",
   "policy_denied",
   "managed_spend_paused",
+  "managed_allowance_unavailable",
 ] as const
 export type LlmErrorReason = (typeof LLM_ERROR_REASONS)[number]
 
@@ -240,7 +242,6 @@ export type HarnPromptResultExtensionField = (typeof HARN_PROMPT_RESULT_EXTENSIO
 
 export const HARN_AGENT_EVENT_KINDS = [
   "agent_loop_stall_warning",
-  "agent_scratchpad_reorganization",
   "anchor_changed",
   "boundary_failure",
   "budget_circuit_breaker",
@@ -249,7 +250,6 @@ export const HARN_AGENT_EVENT_KINDS = [
   "cache_miss",
   "capability_gap",
   "code_librarian_query_nl_fallback",
-  "compass_routing_decision",
   "composition_child_call",
   "composition_child_result",
   "composition_error",
@@ -293,7 +293,6 @@ export const HARN_AGENT_EVENT_KINDS = [
   "session_closed",
   "session_health",
   "step_judge_decision",
-  "structural_validator_decision",
   "subagent_join",
   "subagent_stop",
   "tool_batch_disposition",
@@ -1638,7 +1637,6 @@ export interface ACPTranscriptCompactedUpdateMetaHarn {
   compactionPolicy: ACPValue
   recap: ACPValue
   sourceMeasurement: ACPValue
-  classification: ACPValue
   replayed?: boolean
 }
 
@@ -2154,6 +2152,7 @@ export interface HarnSessionRecapSource {
 export interface HarnSessionRecapTextFact {
   text: string
   sourceEventId: number
+  messageId: string | null
 }
 
 export interface HarnSessionRecapVerificationFact {
@@ -2299,7 +2298,7 @@ function validateHarnSessionRecapSource(value: unknown): void {
 }
 
 function validateHarnSessionRecapTextFact(value: unknown): void {
-  harnSessionRecapObject(value, "HarnSessionRecapTextFact", ["text", "sourceEventId"])
+  harnSessionRecapObject(value, "HarnSessionRecapTextFact", ["text", "sourceEventId", "messageId"])
 }
 
 function validateHarnSessionRecapVerificationFact(value: unknown): void {
@@ -2497,6 +2496,12 @@ export interface HarnPlanDocument {
   created_at: string
   updated_at: string
 }
+export const HARN_PROVIDER_ENDPOINT_CONFIGURATION_ERROR_VALUES = [
+  "invalid_url",
+  "not_absolute_http",
+] as const
+export type HarnProviderEndpointConfigurationError = (typeof HARN_PROVIDER_ENDPOINT_CONFIGURATION_ERROR_VALUES)[number]
+
 export const HARN_MACHINE_SPEND_PERIOD_VALUES = [
   "day",
   "month",
@@ -2610,6 +2615,10 @@ export interface HarnCanonicalHistoryBoundaries {
 export interface HarnACPPromptCorrelation {
   messageId?: string
 }
+export interface HarnACPSessionContinuation {
+  continuation?: string | null
+}
+
 export interface HarnProviderUsage {
   run_id: string
   parent_session_id: string
@@ -2623,6 +2632,15 @@ export interface HarnProviderUsage {
   usage_unknown_calls: number
   known_cost_usd: number
   cost_usd: number | null
+  reported_cache: HarnReportedCacheTotals | null
+}
+
+export interface HarnReportedCacheTotals {
+  reported_calls: number
+  read_reported_calls: number
+  write_reported_calls: number
+  read_tokens: number
+  write_tokens: number
 }
 
 export type HarnAgentsTaskStatus = "SUBMITTED" | "WORKING" | "INPUT_REQUIRED" | "AUTH_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED"
@@ -2635,12 +2653,6 @@ export interface HarnAgentsEventProjection {
   payload: Record<string, ACPValue>
   session_id?: string | null
   task_id?: string | null
-}
-
-export interface HarnAgentEventAgentScratchpadReorganization {
-  iteration: number
-  status: string
-  details: ACPValue
 }
 
 export interface HarnAgentEventAnchorChanged {
@@ -2702,17 +2714,6 @@ export interface HarnAgentEventCodeLibrarianQueryNlFallback {
   mctsExpansions: number
   resultCount: number
   text: string
-}
-
-export interface HarnAgentEventCompassRoutingDecision {
-  toolCallId: string
-  mode: string
-  action: string
-  persona: string
-  originalTool: string
-  routedTool: string
-  targetTool: string
-  path?: string | null
 }
 
 export interface HarnAgentEventCompositionChildCall {
@@ -3068,19 +3069,6 @@ export interface HarnAgentEventStepJudgeDecision {
   model: string
 }
 
-export interface HarnAgentEventStructuralValidatorDecision {
-  iteration: number
-  rule: string
-  diagnostic: string
-  recommendedAction: string
-  vetoed: boolean
-  skipped: boolean
-  reason: string | null
-  onFailure: string
-  attempts: number
-  maxAttempts: number
-}
-
 export interface HarnAgentEventSubagentJoin {
   parentSessionId: string
   parentRunId: string
@@ -3148,7 +3136,6 @@ export interface HarnAgentEventTypedCheckpoint {
 /** The params of one `_harn/agentEvent` notification, discriminated by `kind`. */
 export type HarnAgentEvent =
   | ({ sessionId: string; kind: "agent_loop_stall_warning" } & Record<string, ACPValue>)
-  | ({ sessionId: string; kind: "agent_scratchpad_reorganization" } & HarnAgentEventAgentScratchpadReorganization)
   | ({ sessionId: string; kind: "anchor_changed" } & HarnAgentEventAnchorChanged)
   | ({ sessionId: string; kind: "boundary_failure" } & HarnAgentEventBoundaryFailure)
   | ({ sessionId: string; kind: "budget_circuit_breaker" } & HarnAgentEventBudgetCircuitBreaker)
@@ -3157,7 +3144,6 @@ export type HarnAgentEvent =
   | ({ sessionId: string; kind: "cache_miss" } & Record<string, ACPValue>)
   | ({ sessionId: string; kind: "capability_gap" } & HarnAgentEventCapabilityGap)
   | ({ sessionId: string; kind: "code_librarian_query_nl_fallback" } & HarnAgentEventCodeLibrarianQueryNlFallback)
-  | ({ sessionId: string; kind: "compass_routing_decision" } & HarnAgentEventCompassRoutingDecision)
   | ({ sessionId: string; kind: "composition_child_call" } & HarnAgentEventCompositionChildCall)
   | ({ sessionId: string; kind: "composition_child_result" } & HarnAgentEventCompositionChildResult)
   | ({ sessionId: string; kind: "composition_error" } & HarnAgentEventCompositionError)
@@ -3201,7 +3187,6 @@ export type HarnAgentEvent =
   | ({ sessionId: string; kind: "session_closed" } & HarnAgentEventSessionClosed)
   | ({ sessionId: string; kind: "session_health" } & Record<string, ACPValue>)
   | ({ sessionId: string; kind: "step_judge_decision" } & HarnAgentEventStepJudgeDecision)
-  | ({ sessionId: string; kind: "structural_validator_decision" } & HarnAgentEventStructuralValidatorDecision)
   | ({ sessionId: string; kind: "subagent_join" } & HarnAgentEventSubagentJoin)
   | ({ sessionId: string; kind: "subagent_stop" } & HarnAgentEventSubagentStop)
   | ({ sessionId: string; kind: "tool_batch_disposition" } & HarnAgentEventToolBatchDisposition)
@@ -3209,3 +3194,219 @@ export type HarnAgentEvent =
   | ({ sessionId: string; kind: "tool_format_override" } & HarnAgentEventToolFormatOverride)
   | ({ sessionId: string; kind: "turn_phase_changed" } & HarnAgentEventTurnPhaseChanged)
   | ({ sessionId: string; kind: "typed_checkpoint" } & HarnAgentEventTypedCheckpoint)
+
+export type HarnCrystallizationKind = "candidate" | "plan_only" | "rejected"
+export type HarnCrystallizationPromotionStatus = "blocked" | "needs_approval" | "ready"
+export type HarnCrystallizationReplayExpectation = "match" | "drift"
+export type HarnCrystallizationSegmentKind = "deterministic" | "fuzzy"
+export interface HarnCrystallizationCandidateBundle {
+  schema: "harn.crystallization.candidate.bundle"
+  schema_version: number
+  generated_at: string
+  generator: HarnCrystallizationGenerator
+  kind: HarnCrystallizationKind
+  candidate_id: string
+  external_key: string
+  title: string
+  team: string | null
+  repo: string | null
+  risk_level: string
+  workflow: HarnCrystallizationWorkflowRef
+  source_trace_hashes: string[]
+  source_traces: HarnCrystallizationSourceTrace[]
+  deterministic_steps: HarnCrystallizationStep[]
+  fuzzy_steps: HarnCrystallizationStep[]
+  side_effects: HarnCrystallizationSideEffect[]
+  capabilities: string[]
+  required_secrets: string[]
+  savings: HarnCrystallizationSavingsEstimate
+  shadow: HarnCrystallizationShadowRunReport
+  eval_pack: HarnCrystallizationEvalPackRef | null
+  skill: HarnCrystallizationSkillRef | null
+  fixtures: HarnCrystallizationFixtureRef[]
+  promotion: HarnCrystallizationPromotion
+  redaction: HarnCrystallizationRedactionSummary
+  confidence: number
+  rejection_reasons: string[]
+  warnings: string[]
+}
+
+export interface HarnCrystallizationEvalPackRef {
+  path: string
+  link: string | null
+}
+
+export interface HarnCrystallizationFixtureRef {
+  path: string
+  trace_id: string
+  source_hash: string
+  redacted: boolean
+}
+
+export interface HarnCrystallizationGenerator {
+  tool: string
+  version: string
+}
+
+export interface HarnCrystallizationPromotion {
+  owner: string | null
+  approver: string | null
+  author: string | null
+  rollout_policy: string
+  rollback_target: string | null
+  created_at: string
+  workflow_version: string
+  package_name: string
+  sample_count: number
+  confidence: number
+  shadow_success_count: number
+  shadow_failure_count: number
+  divergence_history: HarnCrystallizationPromotionDivergenceRecord[]
+  approval_history: HarnCrystallizationPromotionApprovalRecord[]
+  criteria: HarnCrystallizationPromotionCriteria
+  estimated_time_token_savings: HarnCrystallizationSavingsEstimate
+}
+
+export interface HarnCrystallizationRedactionSummary {
+  applied: boolean
+  rules: string[]
+  summary: string
+  fixture_count: number
+}
+
+export interface HarnCrystallizationSkillRef {
+  path: string
+  gate_receipt_path: string
+  name: string
+  skill_candidate_id: string
+  workflow_candidate_id: string
+}
+
+export interface HarnCrystallizationSourceTrace {
+  trace_id: string
+  source_hash: string
+  source_url: string | null
+  source_receipt_id: string | null
+  fixture_path: string | null
+  execution_id?: string | null
+}
+
+export interface HarnCrystallizationStep {
+  index: number
+  kind: string
+  name: string
+  segment: HarnCrystallizationSegmentKind
+  parameter_refs: string[]
+  side_effects_known: boolean
+  side_effects: HarnCrystallizationSideEffect[]
+  capabilities: string[]
+  required_secrets: string[]
+  approval: HarnCrystallizationApproval | null
+  review_notes: string[]
+}
+
+export interface HarnCrystallizationWorkflowRef {
+  path: string
+  name: string
+  package_name: string
+  package_version: string
+}
+
+export interface HarnCrystallizationApproval {
+  prompt: string | null
+  approver: string | null
+  required: boolean
+  boundary: string | null
+}
+
+export interface HarnCrystallizationSideEffect {
+  kind: string
+  target: string
+  capability: string | null
+  mutation: string | null
+  metadata: Record<string, ACPValue>
+}
+
+export interface HarnCrystallizationPromotionApprovalRecord {
+  actor: string
+  decision: string
+  recorded_at: string
+  reason: string | null
+}
+
+export interface HarnCrystallizationPromotionCriteria {
+  min_examples: number
+  min_confidence: number
+  requires_shadow_pass: boolean
+  requires_no_rejections: boolean
+  requires_human_approval: boolean
+  approval_reason: string | null
+  status: HarnCrystallizationPromotionStatus
+  reasons: string[]
+}
+
+export interface HarnCrystallizationPromotionDivergenceRecord {
+  trace_id: string
+  path: string | null
+  message: string
+  left: ACPValue
+  right: ACPValue
+}
+
+export interface HarnCrystallizationReplayDivergence {
+  path: string
+  left: ACPValue
+  right: ACPValue
+  message: string
+}
+
+export interface HarnCrystallizationReplayOracleReport {
+  name: string
+  expectation: HarnCrystallizationReplayExpectation
+  passed: boolean
+  first_run_counts: HarnCrystallizationReplayTraceRunCounts
+  second_run_counts: HarnCrystallizationReplayTraceRunCounts
+  protocol_fixture_refs: string[]
+  divergence: HarnCrystallizationReplayDivergence | null
+}
+
+export interface HarnCrystallizationReplayTraceRunCounts {
+  event_log_entries: number
+  trigger_firings: number
+  llm_interactions: number
+  protocol_interactions: number
+  approval_interactions: number
+  effect_receipts: number
+  persona_runtime_states: number
+  agent_transcript_deltas: number
+  final_artifacts: number
+  policy_decisions: number
+  channel_receipts: number
+  lifecycle_receipts: number
+}
+
+export interface HarnCrystallizationSavingsEstimate {
+  model_calls_avoided: number
+  input_tokens_avoided: number
+  output_tokens_avoided: number
+  estimated_cost_usd_avoided: number
+  wall_ms_avoided: number
+  cpu_runtime_cost_usd: number
+  remaining_model_calls: number
+}
+
+export interface HarnCrystallizationShadowRunReport {
+  pass: boolean
+  compared_traces: number
+  failures: string[]
+  traces: HarnCrystallizationShadowTraceResult[]
+}
+
+export interface HarnCrystallizationShadowTraceResult {
+  trace_id: string
+  source_hash: string
+  pass: boolean
+  details: string[]
+  compared_receipts: number
+  replay_oracle: HarnCrystallizationReplayOracleReport | null
+}

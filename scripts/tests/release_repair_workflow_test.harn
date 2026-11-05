@@ -6,33 +6,6 @@ fn expression(value: string) -> string {
   return "$" + "{{ " + value + " }}"
 }
 
-pipeline test_reconciler_has_separate_read_only_consumer_custody_authority(harness: Harness) {
-  const flow = read_yaml(harness.fs, "../../.github/workflows/promote-release.yml", nil)
-  const steps = flow.jobs.reconcile.steps
-  let readers = 0
-  let guards = 0
-  for step in steps {
-    if step.id == "recovery-read" {
-      readers = readers + 1
-      assert_eq(step.with["permission-actions"], "read")
-      assert_eq(step.with["permission-contents"], "read")
-      assert_eq(step.with["permission-pull-requests"], "read")
-      assert_eq(step.with["permission-issues"], nil)
-      assert(step.with.repositories.contains("secrets.CONSUMER_CANARY_REPOSITORY"))
-    }
-    if step.env != nil && step.env.RELEASE_RECOVERY_READ_TOKEN != nil {
-      guards = guards + 1
-      assert_eq(
-        step.env.RELEASE_RECOVERY_READ_TOKEN,
-        expression("steps.recovery-read.outputs.token"),
-      )
-      assert(step.run.contains("release_candidate_reconcile.sh"))
-    }
-  }
-  assert_eq(readers, 1)
-  assert_eq(guards, 1)
-}
-
 pipeline test_candidate_security_owns_exact_source_admission_before_builds(harness: Harness) {
   const flow = read_yaml(harness.fs, "../../.github/workflows/build-release-binaries.yml", nil)
   const supply = read_yaml(harness.fs, "../../.github/workflows/supply-chain.yml", nil)
@@ -154,4 +127,31 @@ pipeline test_publication_receives_only_the_authenticated_recovery_outputs(harne
   assert_eq(authority[0].with["permission-actions"], "read")
   assert_eq(authority[0].with["permission-contents"], "read")
   assert_eq(authority[0].with["permission-pull-requests"], "read")
+}
+
+pipeline test_publication_receives_the_qualified_manifest_identity(harness: Harness) {
+  const workflow = read_yaml(harness.fs, "../../.github/workflows/promote-release.yml", nil)
+  const job = workflow.jobs.authorize
+  const bindings = job.steps.filter({ step -> step?.id == "producer-binding" }).to_list()
+  assert_eq(len(bindings), 1)
+  const binding = bindings[0]
+  assert(binding.run.contains("release_require_rehearsal_binding"))
+  assert(binding.run.contains("release_write_producer_identity"))
+  for name in ["expected_attempt", "expected_manifest_id", "expected_manifest_digest"] {
+    assert_eq(
+      job.outputs[name],
+      expression("steps.producer-binding.outputs." + name + " || needs.plan.outputs." + name),
+    )
+    assert_eq(workflow.jobs.plan.outputs[name], expression("steps.plan.outputs." + name))
+  }
+  const call = workflow.jobs.promote
+  assert_eq(call.with["expected-attempt"], expression("needs.authorize.outputs.expected_attempt"))
+  assert_eq(
+    call.with["expected-manifest-id"],
+    expression("needs.authorize.outputs.expected_manifest_id"),
+  )
+  assert_eq(
+    call.with["expected-manifest-digest"],
+    expression("needs.authorize.outputs.expected_manifest_digest"),
+  )
 }

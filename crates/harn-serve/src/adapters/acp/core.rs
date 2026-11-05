@@ -41,6 +41,7 @@ impl AcpServer {
             client_capabilities: client_capabilities::ClientCapabilities::default(),
             launcher_environment: config.launcher_environment,
             launcher_session_environment: config.launcher_session_environment,
+            host_responder: config.host_responder,
             descriptor: AdapterDescriptor {
                 id: "acp".to_string(),
                 caller_shape: "agent-session".to_string(),
@@ -66,6 +67,7 @@ impl AcpServer {
             runtime_provider_endpoint_overrides,
             llm_capability_overrides,
             default_budget: config.budget,
+            child_egress: super::child_egress::ChildEgress::start(&config.sandbox),
             sandbox: config.sandbox,
             host_inference_boundary: config.host_inference_boundary,
             machine_spend_quota: config.machine_spend_quota,

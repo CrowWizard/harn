@@ -258,6 +258,11 @@ pub enum AcpPromptErrorSchema {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptFailureFacts {
+    /// Boundary-owned explanation and recovery text, separate from diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -357,6 +362,8 @@ impl AcpPromptFailureFacts {
             .unwrap_or_default();
         Self {
             category: string_field("category"),
+            message: string_field("message"),
+            detail: string_field("detail"),
             kind,
             reason: string_field("reason"),
             origin: string_field("origin"),
@@ -553,6 +560,8 @@ pub struct AcpSessionLoadParams {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<String>,
     #[serde(
         rename = "environmentPolicy",
         default,
@@ -578,6 +587,7 @@ impl AcpSessionLoadParams {
         Self {
             session_id: session_id.into(),
             cwd: None,
+            continuation: None,
             environment_policy: Some(environment_policy),
         }
     }
@@ -587,11 +597,30 @@ impl AcpSessionLoadParams {
         self
     }
 
+    pub fn with_continuation(mut self, continuation: impl Into<String>) -> Self {
+        self.continuation = Some(continuation.into());
+        self
+    }
+
     pub fn with_workspace_checkpoint(self, enabled: bool) -> AcpSessionLoadWithCheckpoint {
         AcpSessionLoadWithCheckpoint {
             session: self,
             workspace_checkpoint: enabled,
         }
+    }
+}
+
+/// A closed session's optional process-local history continuation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AcpSessionCloseResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<String>,
+}
+
+impl AcpSessionCloseResult {
+    pub fn schema() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(Self))
+            .expect("ACP session continuation schema serializes")
     }
 }
 
@@ -960,18 +989,21 @@ mod tests {
                 grants: Vec::new(),
             },
         )
-        .with_cwd("/workspace");
+        .with_cwd("/workspace")
+        .with_continuation("saved-continuation");
         let request = AcpJsonRpcRequest::session_load(7, params)
             .into_json_value()
             .expect("typed load request");
         assert_eq!(request["method"], ACP_METHOD_SESSION_LOAD);
         assert_eq!(request["params"]["environmentPolicy"]["kind"], "isolated");
         assert_eq!(request["params"]["cwd"], "/workspace");
+        assert_eq!(request["params"]["continuation"], "saved-continuation");
         let mut missing = request["params"].clone();
         missing.as_object_mut().unwrap().remove("environmentPolicy");
         let params = serde_json::from_value::<AcpSessionLoadParams>(missing)
             .expect("omitted policy uses the server default");
         assert!(params.environment_policy.is_none());
+        assert_eq!(params.continuation.as_deref(), Some("saved-continuation"));
     }
 
     #[test]
@@ -996,7 +1028,8 @@ mod tests {
         let params = AcpSessionLoadParams {
             session_id: "saved-session".into(),
             cwd: Some("/workspace".into()),
-            environment_policy: AcpSessionEnvironmentConfig::default(),
+            continuation: None,
+            environment_policy: Some(AcpSessionEnvironmentConfig::default()),
         }
         .with_workspace_checkpoint(true);
         let request = AcpJsonRpcRequest::session_load_with_checkpoint(8, params)

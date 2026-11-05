@@ -782,7 +782,6 @@ unverified = [
     "deepinfra",
     "flexai",
     "friendli",
-    "github_models",
     "huggingface",
     "hunyuan",
     "hyperbolic",
@@ -1562,6 +1561,8 @@ complementary_with = [
     "kimi",
 ]
 context_window = 1010000
+deprecated = true
+deprecation_note = "Together removes this model from serverless inference on 2026-11-04 and recommends Qwen/Qwen3.7-Max: https://docs.together.ai/docs/deprecations"
 equivalence_group = "qwen3.8-2.4t-a95b"
 logical_model = "qwen3.8-2.4t-a95b"
 name = "Qwen3.8 2.4T A95B (Together)"
@@ -1575,6 +1576,8 @@ strengths = [
     "tool_use",
     "reasoning",
 ]
+sunset_date = "2026-11-04"
+superseded_by = "Qwen/Qwen3.7-Max"
 tier = "frontier"
 wire_model = "Qwen/Qwen3.8-2.4T-A95B"
 
@@ -4767,7 +4770,7 @@ cache_read_per_mtok = 0.004
 id = "deepinfra-v41-flash-intro"
 input_per_mtok = 0.14
 output_per_mtok = 0.42
-review_after = "2026-10-04"
+review_after = "2026-12-04"
 source_url = "https://deepinfra.com/deepseek-ai/DeepSeek-V4.1-Flash"
 starts_on = "2026-09-26"
 
@@ -8238,10 +8241,11 @@ output_multiplier = 1.5
 [[models."gpt-5.6-sol".pricing.promotions]]
 cache_read_per_mtok = 0.4
 cache_write_per_mtok = 5.0
+ends_on = "2026-11-29"
 id = "openai-2026-08-sol"
 input_per_mtok = 4.0
 output_per_mtok = 20.0
-review_after = "2026-11-21"
+review_after = "2026-11-30"
 source_url = "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
 starts_on = "2026-08-21"
 
@@ -9829,7 +9833,7 @@ cache_read_per_mtok = 0.01
 id = "mercury-3-launch"
 input_per_mtok = 0.1
 output_per_mtok = 0.35
-review_after = "2026-10-28"
+review_after = "2026-12-04"
 source_url = "https://docs.inceptionlabs.ai/get-started/models"
 starts_on = "2026-10-21"
 
@@ -15716,6 +15720,7 @@ features = [
     "native_tools",
     "reasoning",
 ]
+stream_usage_accounting = true
 
 [providers.atlas.healthcheck]
 method = "GET"
@@ -16068,19 +16073,6 @@ value = false
 method = "GET"
 path = "/v1beta/models"
 
-[providers.github_models]
-auth_env = "GITHUB_MODELS_TOKEN"
-auth_style = "bearer"
-base_url = "https://models.github.ai/inference"
-base_url_env = "GITHUB_MODELS_BASE_URL"
-chat_endpoint = "/chat/completions"
-completion_endpoint = "/completions"
-features = ["native_tools"]
-
-[providers.github_models.healthcheck]
-method = "GET"
-url = "https://models.github.ai/catalog/models"
-
 [providers.groq]
 auth_env = "GROQ_API_KEY"
 auth_style = "bearer"
@@ -16137,6 +16129,7 @@ base_url_env = "HUNYUAN_BASE_URL"
 chat_endpoint = "/chat/completions"
 completion_endpoint = "/completions"
 features = ["native_tools"]
+stream_usage_accounting = true
 
 [providers.hunyuan.healthcheck]
 method = "GET"
@@ -16145,22 +16138,22 @@ path = "/models"
 [providers.hyperbolic]
 auth_env = "HYPERBOLIC_API_KEY"
 auth_style = "bearer"
-base_url = "https://api.hyperbolic.xyz/v1"
+base_url = "https://api.hyperbolic.ai/inference/v1"
 base_url_env = "HYPERBOLIC_BASE_URL"
 chat_endpoint = "/chat/completions"
-completion_endpoint = "/completions"
 features = ["native_tools"]
+stream_usage_accounting = true
 
 [providers.hyperbolic.healthcheck]
 method = "GET"
 path = "/models"
 
 [providers.hyperbolic.rate_limits]
-last_verified = "2026-06-23"
-notes = "Docs also publish a 600 RPM Pro tier after account upgrade/deposit; this row records the conservative default tier."
-rpm = 60
-source_url = "https://www.hyperbolic.ai/docs/inference/text-apis"
-tier = "basic"
+last_verified = "2026-11-01"
+notes = "Documented per API key; inference requires a Pro account or Organization and a positive credit balance."
+rpm = 300
+source_url = "https://www.hyperbolic.ai/docs/inference/overview"
+tier = "Pro or Organization"
 
 [providers.inception]
 auth_env = "INCEPTION_API_KEY"
@@ -16830,6 +16823,7 @@ training_default = "does_not_train"
 auth_style = "none"
 base_url = "http://localhost:8000"
 base_url_env = "VLLM_BASE_URL"
+cache_usage_accounting = true
 chat_endpoint = "/v1/chat/completions"
 completion_endpoint = "/v1/completions"
 cost_per_1k_in = 0.0
@@ -16985,12 +16979,8 @@ expires_on = "2026-11-14"
 reviewed_on = "2026-08-26"
 tracking_issue = 7320
 unverified = [
-    "atlas",
     "cloudflare_ai_gateway",
     "cohere",
-    "github_models",
-    "hunyuan",
-    "hyperbolic",
     "local",
     "parasail",
     "siliconflow",
@@ -17063,6 +17053,12 @@ provider = "inception"
 sources = ["https://docs.inceptionlabs.ai/api-reference/chat/create-a-chat-completion"]
 
 [[usage_accounting_audit.verified]]
+checked_on = "2026-11-01"
+fields = ["stream"]
+provider = "hyperbolic"
+sources = ["https://www.hyperbolic.ai/docs/inference/text-apis"]
+
+[[usage_accounting_audit.verified]]
 checked_on = "2026-10-16"
 fields = [
     "cache",
@@ -17128,13 +17124,13 @@ sources = [
 ]
 
 [[usage_accounting_audit.verified]]
-checked_on = "2026-10-16"
-fields = ["stream"]
-provider = "vllm"
-sources = [
-    "https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/serving.py",
-    "https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/serve/utils/api_utils.py",
+checked_on = "2026-11-01"
+fields = [
+    "cache",
+    "stream",
 ]
+provider = "vllm"
+sources = ["https://github.com/vllm-project/vllm/blob/3a90cc6fd0504b52bf47d58e8d70cff4b03f2c19/vllm/entrypoints/openai/chat_completion/serving.py"]
 
 [[usage_accounting_audit.verified]]
 checked_on = "2026-10-16"
@@ -17213,6 +17209,18 @@ sources = [
     "https://console.groq.com/docs/prompt-caching",
     "https://github.com/groq/groq-python/blob/main/src/groq/types/chat/chat_completion_chunk.py",
 ]
+
+[[usage_accounting_audit.verified]]
+checked_on = "2026-11-01"
+fields = ["stream"]
+provider = "atlas"
+sources = ["https://www.atlascloud.ai/docs/en/llm-protocols"]
+
+[[usage_accounting_audit.verified]]
+checked_on = "2026-11-01"
+fields = ["stream"]
+provider = "hunyuan"
+sources = ["https://cloud.tencent.com/document/product/1729/111007"]
 
 [[usage_accounting_audit.verified]]
 checked_on = "2026-10-16"

@@ -16,6 +16,7 @@ mod bridge;
 mod builtins;
 mod checkpoint_tracking;
 mod checkpoints;
+mod child_egress;
 mod client_capabilities;
 mod commands;
 mod confinement;
@@ -27,6 +28,7 @@ mod events;
 mod execute;
 mod hitl_response;
 mod host_ownership;
+mod host_responder;
 mod inject;
 mod integrations;
 mod io;
@@ -61,6 +63,7 @@ use bridge::AcpBridge;
 pub use bridge::{acp_plan_update, AcpOutput};
 pub use confinement::{confine_acp_server_process, AcpServerConfinement};
 pub use execute::PromptExecutionError as AcpPromptExecutionError;
+pub use host_responder::{HostResponder, HostResponderBinder};
 use live_clients::{
     apply_live_client_operation, is_live_client_method, write_live_client_operation,
 };
@@ -99,12 +102,12 @@ pub use types::{
     AcpJsonRpcId, AcpJsonRpcRequest, AcpJsonRpcResponse, AcpMeta, AcpPlanDocumentMutation,
     AcpPlanDocumentMutationParams, AcpPlanDocumentMutationResult, AcpPromptCorrelation,
     AcpPromptDelivery, AcpPromptErrorData, AcpPromptErrorSchema, AcpPromptFailureFacts,
-    AcpRoutingAttempt, AcpSessionCancelToolCallParams, AcpSessionEnvironmentConfig,
-    AcpSessionIdParams, AcpSessionInjectHostEventParams, AcpSessionLoadParams,
-    AcpSessionLoadWithCheckpoint, AcpSessionNewParams, AcpSessionPromptParams,
-    AcpSessionPromptReceipt, AcpSessionPromptResult, AcpSessionRestoreResult,
-    ACP_METHOD_CANCEL_REQUEST, ACP_METHOD_INITIALIZE, ACP_METHOD_SESSION_CANCEL,
-    ACP_METHOD_SESSION_CANCEL_TOOL_CALL, ACP_METHOD_SESSION_CLOSE,
+    AcpRoutingAttempt, AcpSessionCancelToolCallParams, AcpSessionCloseResult,
+    AcpSessionEnvironmentConfig, AcpSessionIdParams, AcpSessionInjectHostEventParams,
+    AcpSessionLoadParams, AcpSessionLoadWithCheckpoint, AcpSessionNewParams,
+    AcpSessionPromptParams, AcpSessionPromptReceipt, AcpSessionPromptResult,
+    AcpSessionRestoreResult, ACP_METHOD_CANCEL_REQUEST, ACP_METHOD_INITIALIZE,
+    ACP_METHOD_SESSION_CANCEL, ACP_METHOD_SESSION_CANCEL_TOOL_CALL, ACP_METHOD_SESSION_CLOSE,
     ACP_METHOD_SESSION_INJECT_HOST_EVENT, ACP_METHOD_SESSION_INPUTS, ACP_METHOD_SESSION_LOAD,
     ACP_METHOD_SESSION_NEW, ACP_METHOD_SESSION_PENDING_PROMPTS,
     ACP_METHOD_SESSION_PLAN_DOCUMENT_MUTATE, ACP_METHOD_SESSION_PROMPT, ACP_METHOD_SESSION_RESUME,
@@ -761,6 +764,9 @@ pub struct AcpServerConfig {
     pub runtime_configurator: Arc<dyn AcpRuntimeConfigurator>,
     /// Trusted host admission policy; RPC metadata cannot enable or disable it.
     pub task_admission: Option<Arc<dyn SessionTaskAdmission>>,
+    /// Binds a per-session answerer for `host/capabilities` and `host/call`
+    /// instead of asking the connected client. `None` sends them to the client.
+    pub host_responder: Option<Arc<dyn HostResponderBinder>>,
     pub llm_config_overrides: Option<harn_vm::llm_config::ProvidersConfig>,
     pub llm_capability_overrides: Option<harn_vm::llm::capabilities::CapabilitiesFile>,
     pub profile: AcpProfileConfig,
@@ -786,6 +792,14 @@ pub struct AcpSandboxConfig {
     /// to say so and would silently get a confined one. `None` keeps the
     /// historical inference exactly as it was.
     pub requested_profile: Option<harn_vm::orchestration::SandboxProfile>,
+    /// Hosts a confined child may reach. `Some` runs one deny-by-default proxy
+    /// for this server and limits each child with network authority to it, so
+    /// an empty list means no destination at all. `None` leaves child network
+    /// to the mode policy, and the list has no effect without process
+    /// confinement, since nothing would hold a child to the proxy. Sessions
+    /// share the proxy and its approvals, so a server using this holds one user
+    /// and one trust domain.
+    pub child_network_allow: Option<Vec<String>>,
 }
 
 impl AcpServerConfig {
@@ -800,6 +814,7 @@ impl AcpServerConfig {
             authenticated_principal: None,
             runtime_configurator: Arc::new(NoopAcpRuntimeConfigurator),
             task_admission: None,
+            host_responder: None,
             llm_config_overrides: None,
             llm_capability_overrides: None,
             profile: AcpProfileConfig::default(),
@@ -850,6 +865,14 @@ impl AcpServerConfig {
                 endpoints,
             })
         };
+        self
+    }
+
+    /// Serve each session's host requests from a responder `binder` binds to
+    /// that session's root, so a client that is not a host (a standard ACP
+    /// editor) can still run a turn.
+    pub fn with_host_responder(mut self, binder: Arc<dyn HostResponderBinder>) -> Self {
+        self.host_responder = Some(binder);
         self
     }
 
@@ -959,6 +982,7 @@ impl AcpSandboxConfig {
             read_only_roots: canonicalize_sandbox_roots(roots),
             process: harn_vm::orchestration::ProcessSandboxPolicy::default(),
             requested_profile: None,
+            child_network_allow: None,
         }
     }
 
@@ -967,6 +991,7 @@ impl AcpSandboxConfig {
             read_only_roots: Vec::new(),
             process,
             requested_profile: None,
+            child_network_allow: None,
         }
     }
 
@@ -1033,6 +1058,7 @@ pub struct AcpServer {
     client_capabilities: client_capabilities::ClientCapabilities,
     launcher_environment: harn_vm::security::LauncherEnvironment,
     launcher_session_environment: Option<harn_vm::security::EnvironmentPolicyKind>,
+    host_responder: Option<Arc<dyn HostResponderBinder>>,
     host_inference_boundary: Option<harn_vm::llm::api::InferenceBoundary>,
     machine_spend_quota: Option<harn_vm::llm::MachineSpendQuota>,
     descriptor: AdapterDescriptor,
@@ -1076,6 +1102,7 @@ pub struct AcpServer {
     /// Server-level budget inherited by sessions unless they override it.
     default_budget: Option<BudgetSpec>,
     sandbox: AcpSandboxConfig,
+    child_egress: child_egress::ChildEgress,
     /// Active bulk-OAuth driver from the most recent `mcp/authorize_batch`
     /// (harn#3357). Held across requests so a follow-up `mcp/oauth_callback`
     /// whose `state` belongs to a batch flow routes through the driver

@@ -1127,8 +1127,8 @@ enum ConsentVerdict {
 /// context enriched with the deterministic classification (`consent.reason`
 /// and `consent.risk_labels`) and returns the `with_consent` prompt_fn shape:
 /// `true` / `{decision: "approved"}` to allow, `false` /
-/// `{decision: "denied", reason?}` to deny. Any non-bool, non-dict verdict is
-/// treated as a denial (fail closed), matching `with_consent`.
+/// `{decision: "denied", reason?}` to deny. The documented `auto` opt-out is
+/// accepted; missing, malformed and unknown outcomes deny, as in `with_consent`.
 async fn command_consent_verdict(
     ctx: Option<&crate::vm::AsyncBuiltinCtx>,
     policy: &CommandPolicy,
@@ -1154,28 +1154,20 @@ async fn command_consent_verdict(
 }
 
 fn parse_consent_outcome(value: VmValue, reason: &str) -> ConsentVerdict {
-    match value {
-        VmValue::Bool(true) => ConsentVerdict::Approved,
-        VmValue::Bool(false) => ConsentVerdict::Denied(default_consent_denial(reason)),
-        VmValue::Dict(map) => {
-            let verdict = map
-                .get("decision")
-                .map(|value| value.display())
-                .unwrap_or_else(|| "denied".to_string());
-            if verdict == "denied" {
-                let message = map
-                    .get("reason")
+    use crate::stdlib::consent::ConsentDecision;
+
+    match ConsentDecision::from_value(&value) {
+        ConsentDecision::Approved | ConsentDecision::Auto => ConsentVerdict::Approved,
+        ConsentDecision::Denied => {
+            let message = if let VmValue::Dict(map) = &value {
+                map.get("reason")
                     .or_else(|| map.get("message"))
                     .map(|value| value.display())
-                    .unwrap_or_else(|| default_consent_denial(reason));
-                ConsentVerdict::Denied(message)
             } else {
-                ConsentVerdict::Approved
-            }
+                None
+            };
+            ConsentVerdict::Denied(message.unwrap_or_else(|| default_consent_denial(reason)))
         }
-        // Mirror `with_consent`: a verdict that is neither a bool nor a dict
-        // carries no `decision` key, so it resolves to a denial. Fail closed.
-        _ => ConsentVerdict::Denied(default_consent_denial(reason)),
     }
 }
 
@@ -1458,6 +1450,7 @@ mod scan;
 mod workspace_effect;
 
 pub use workspace_effect::{command_workspace_effect_json, command_workspace_effect_value};
+pub(crate) use workspace_effect::{gh_invocation_is_read_only, gh_read, GhRead};
 
 pub use scan::declared_command_hard_denial;
 use scan::*;

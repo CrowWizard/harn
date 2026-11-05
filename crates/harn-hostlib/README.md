@@ -83,8 +83,8 @@ Tree-sitter grammars are pinned in [`Cargo.toml`](Cargo.toml). Language
 names, aliases, extensions, exact file names (`Dockerfile`, `Makefile`), and
 structural capability columns live in one table, `LANGUAGES` in the
 [`harn-languages`](../harn-languages/src/lib.rs) crate. The code index,
-scanner, `get_file_outline`, `ast.*`, the project fingerprint, and the edit
-compass all detect languages through it, and a sweep test asserts they agree.
+scanner, `get_file_outline`, `ast.*`, and the project fingerprint
+all detect languages through it, and a sweep test asserts they agree.
 `src/ast/language.rs` binds a grammar to every registry row marked
 structural. `get_file_outline` returns `status: "unsupported"` with a typed
 `reason` for files the registry does not know, languages without a grammar,
@@ -257,6 +257,10 @@ implementing the same walk on git tooling cannot reproduce it.
 defaults to `builtin`, because a recursive watch over dependency and build
 trees exhausts the OS watch budget while a gitignored file is still a file
 whose changes a subscriber may need.
+
+`tools/search` skips files detected as binary by default (using NUL bytes). Set
+`include_binary: true` to search them as well. Set `ignore_policy: "none"`
+separately when ignored dependency and build trees are also needed.
 
 - `hostlib_scanner_scan_project({ root, include_hidden?, ignore_policy?,
   max_files?, include_git_history?, repo_map_token_budget? })` — full scan.

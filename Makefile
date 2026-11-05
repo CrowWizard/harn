@@ -4,7 +4,7 @@
 .PHONY: check-docs check-docs-portable check-docs-exact check-docs-cookbook-entrypoints
 .PHONY: check-typescript-protocol-binding check-swift-protocol-binding
 .PHONY: check-provider-catalog-drift-core
-.PHONY: check-scheduled-workflows check-e2e-trigger-contract
+.PHONY: check-scheduled-workflows check-required-checks check-e2e-trigger-contract
 .PHONY: test-postgres-live test-postgres-cloud
 .PHONY: sync-docs-diagnostics
 .PHONY: setup-wasm setup-wasm-tools gen-wasm-wit check-wasm-wit wasm-build gen-app-runtime check-app-runtime wasm-audit-imports wasm-test-browser wasm-check wasm-demo kernel-check kernel-test kernel-vm-parity vm-check cli-check cli-test gen-portable-benchmark-schema check-portable-benchmark-schema gen-portable-demo-package check-portable-demo-package
@@ -71,7 +71,7 @@ all: fmt
 	$(MAKE) HARN_BIN="$$harn_bin" check-cli-localization || exit 1; \
 	$(MAKE) test-release-notices || exit 1; \
 	$(MAKE) check-aws-config-vendor test-aws-config-vendor || exit 1; \
-	$(MAKE) HARN_BIN="$$harn_bin" lint lint-md lint-actions lint-harn check-app-host spec-lint check-openapi-snapshot fmt-harn test test-harn-scripts test-agent-scripts test-pr-gate-scripts test-rust-lint-lane-cache conformance protocol-conformance mcp-conformance replay-oracle replay-bench check-highlight check-portable-benchmark-schema check-portable-demo-package check-prompt-grammar check-builtin-methods check-protocol-artifacts check-portal-types check-connector-schemas check-harness-migrations check-cli-surface check-bindings check-session-bundle-schema check-run-view-fixtures check-docs lint-test-patterns lint-diagnostic-codes check-stdlib-host-neutral check-public-product-names check-stdlib-strict-types check-stdlib-public-return-types check-schema-strict check-optional-dep-feature-contracts check-receipt-structs check-provider-catalog-drift check-source-file-lengths check-test-target-coverage check-gate-path-visibility check-python-boundary check-harn-syntax-sensitive-scans check-agent-guidance check-crate-sibling-versions check-protocol-symbol-removals check-dependabot-groups check-tree-sitter-keywords check-tree-sitter-parser check-grammar-keywords check-grammar-fitness check-loud-boundaries check-turn-end-boundary check-release-contract check-release-audit-contract check-ci-cache-policy check-rust-test-lane-policy check-cargo-lock-contract check-scheduled-workflows check-vm-exposures portal-check || exit 1; \
+	$(MAKE) HARN_BIN="$$harn_bin" lint lint-md lint-actions lint-harn check-app-host spec-lint check-openapi-snapshot fmt-harn test test-harn-scripts test-agent-scripts test-pr-gate-scripts test-rust-lint-lane-cache conformance protocol-conformance mcp-conformance replay-oracle replay-bench check-highlight check-portable-benchmark-schema check-portable-demo-package check-prompt-grammar check-builtin-methods check-protocol-artifacts check-portal-types check-connector-schemas check-harness-migrations check-cli-surface check-bindings check-session-bundle-schema check-run-view-fixtures check-docs lint-test-patterns lint-diagnostic-codes check-stdlib-host-neutral check-public-product-names check-stdlib-strict-types check-stdlib-public-return-types check-schema-strict check-optional-dep-feature-contracts check-receipt-structs check-provider-catalog-drift check-source-file-lengths check-test-target-coverage check-gate-path-visibility check-python-boundary check-harn-syntax-sensitive-scans check-agent-guidance check-crate-sibling-versions check-protocol-symbol-removals check-dependabot-groups check-tree-sitter-keywords check-tree-sitter-parser check-grammar-keywords check-grammar-fitness check-loud-boundaries check-turn-end-boundary check-release-contract check-release-audit-contract check-ci-cache-policy check-rust-test-lane-policy check-cargo-lock-contract check-scheduled-workflows check-required-checks check-vm-exposures portal-check || exit 1; \
 	if [ -z "$(strip $(HARN_BIN))" ]; then HARN_BIN='' HARN_BIN_NO_BUILD=1 ./scripts/harn_bin.sh --record-receipt; fi
 
 check: all
@@ -251,21 +251,30 @@ build: build-harn
 # Canonical CLI build for product-path iteration. Retains the worktree target
 # isolation, freshness-receipt, and signing contract.
 build-harn:
-	@HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --print >/dev/null
-	@HARN_LOCAL_SIGN_QUIET=1 ./scripts/sign_local_macos.sh
-	@HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --record-receipt
+	@set -e; \
+	harn_bin="$$(HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --print)"; \
+	HARN_LOCAL_SIGN_QUIET=1 ./scripts/sign_local_macos.sh "$$harn_bin"; \
+	HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --record-receipt; \
+	./scripts/sign_local_macos.sh --verify "$$harn_bin"
 
 build-release:
 	$(HARN_CARGO_CMD) build --release
-	@HARN_LOCAL_SIGN_QUIET=1 ./scripts/sign_local_macos.sh
+	@set -e; \
+	target_dir="$$(. ./scripts/lib/cargo_env.sh; harn_cargo_metadata_target_dir)"; \
+	case "$${OS:-$$(uname -s)}" in Windows_NT|MINGW*|MSYS*|CYGWIN*) suffix=.exe ;; *) suffix= ;; esac; \
+	harn_bin="$$target_dir/release/harn$$suffix"; \
+	HARN_LOCAL_SIGN_QUIET=1 ./scripts/sign_local_macos.sh "$$harn_bin"; \
+	./scripts/sign_local_macos.sh --verify "$$harn_bin"
 
 # Re-sign already-built harn binaries without rebuilding. Useful after
 # pulling, switching worktrees, or any path that touched target/ without
 # going through `make build` (e.g. `cargo run` with sccache).
 sign-local:
-	@HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --print >/dev/null
-	./scripts/sign_local_macos.sh
-	@HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --record-receipt
+	@set -e; \
+	harn_bin="$$(HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --print)"; \
+	./scripts/sign_local_macos.sh "$$harn_bin"; \
+	HARN_BIN='' HARN_BIN_NO_BUILD=0 ./scripts/harn_bin.sh --record-receipt; \
+	./scripts/sign_local_macos.sh --verify "$$harn_bin"
 
 # Format all code
 fmt: fmt-app-host
@@ -550,6 +559,7 @@ lint-actions-source:
 
 # Evaluate the admitted Smart Ship workflow predicate with GitHub's expression engine.
 	@node --test scripts/tests/smart_ship_workflow_test.mjs
+	@node --test scripts/tests/macos_pr_dispatch_test.mjs
 
 # Validate the Harn-specific runner-tier contract in a lane that already has a
 # warm, exact-commit Harn binary.
@@ -799,6 +809,8 @@ test-pr-gate-scripts:
 	./scripts/tests/hook_rust_gate_test.sh
 	./scripts/tests/hook_timing_instrument_test.sh
 	./scripts/tests/hook_registry_harn_bin_test.sh
+	./scripts/tests/owned_macos_pr_check_test.sh
+	./scripts/tests/hook_no_local_build_test.sh
 	./scripts/tests/hook_agent_gate_census_test.sh
 	./scripts/tests/pre_push_validation_range_test.sh
 	./scripts/tests/pre_push_signature_census_test.sh
@@ -849,6 +861,7 @@ test-pr-gate-scripts:
 	./scripts/tests/prune_stale_targets_test.sh
 	bash ./scripts/tests/prune_stale_targets_lock_test.sh
 	python3 ./scripts/tests/prune_stale_targets_reader_test.py
+	python3 ./scripts/tests/prune_stale_targets_linux_census_test.py
 	./scripts/tests/prune_stale_targets_retention_test.sh
 	./scripts/tests/prune_stale_targets_host_policy_test.sh
 	bash ./scripts/tests/prune_stale_targets_pressure_test.sh
@@ -906,9 +919,7 @@ test-pr-gate-post-warm-integrations: test-rust-lint-lane-cache
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/open_release_pr_test.sh
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/release_withdrawal_lineage_test.sh
 	HARN_BIN="$(HARN_BIN)" ./scripts/tests/release_candidate_trigger_test.sh
-	./scripts/tests/release_candidate_reconcile_test.sh
 	node --test scripts/tests/release_candidate_state_test.mjs
-	node --test scripts/tests/release_reconcile_wake_test.mjs
 	node --test scripts/tests/dependency_security_test.mjs
 	./scripts/tests/dispatch_native_qualification_test.sh
 	./scripts/tests/make_harn_cargo_env_test.sh
@@ -1776,6 +1787,7 @@ check-rust-test-lane-policy:
 	@echo "=== Checking Rust test lane stack contract ==="
 	@$(HARN_CMD) run scripts/check_rust_test_lane_policy.harn
 	@bash scripts/tests/rust_resource_budget_test.sh
+	@node --test scripts/tests/native_qualification_budget_test.mjs
 	@bash scripts/tests/host_telemetry_test.sh
 	@bash scripts/tests/runner_capacity_test.sh
 	@bash scripts/tests/consumer_canary_test.sh
@@ -1788,6 +1800,10 @@ check-cargo-lock-contract:
 check-scheduled-workflows:
 	@echo "=== Checking scheduled workflow claims and cadences ==="
 	@$(HARN_CMD) run scripts/check_scheduled_workflows.harn
+
+check-required-checks:
+	@echo "=== Checking required status checks against their workflows ==="
+	@$(HARN_CMD) run scripts/check_required_checks.harn
 
 check-agent-guidance:
 	@echo "=== Checking canonical agent guidance ==="

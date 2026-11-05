@@ -1509,7 +1509,6 @@ pub struct ACPSessionRequestPermissionResult {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HarnAgentEventKind {
     AgentLoopStallWarning,
-    AgentScratchpadReorganization,
     AnchorChanged,
     BoundaryFailure,
     BudgetCircuitBreaker,
@@ -1518,7 +1517,6 @@ pub enum HarnAgentEventKind {
     CacheMiss,
     CapabilityGap,
     CodeLibrarianQueryNlFallback,
-    CompassRoutingDecision,
     CompositionChildCall,
     CompositionChildResult,
     CompositionError,
@@ -1562,7 +1560,6 @@ pub enum HarnAgentEventKind {
     SessionClosed,
     SessionHealth,
     StepJudgeDecision,
-    StructuralValidatorDecision,
     SubagentJoin,
     SubagentStop,
     ToolBatchDisposition,
@@ -1577,7 +1574,6 @@ impl HarnAgentEventKind {
     pub fn as_str(&self) -> &str {
         match self {
             Self::AgentLoopStallWarning => "agent_loop_stall_warning",
-            Self::AgentScratchpadReorganization => "agent_scratchpad_reorganization",
             Self::AnchorChanged => "anchor_changed",
             Self::BoundaryFailure => "boundary_failure",
             Self::BudgetCircuitBreaker => "budget_circuit_breaker",
@@ -1586,7 +1582,6 @@ impl HarnAgentEventKind {
             Self::CacheMiss => "cache_miss",
             Self::CapabilityGap => "capability_gap",
             Self::CodeLibrarianQueryNlFallback => "code_librarian_query_nl_fallback",
-            Self::CompassRoutingDecision => "compass_routing_decision",
             Self::CompositionChildCall => "composition_child_call",
             Self::CompositionChildResult => "composition_child_result",
             Self::CompositionError => "composition_error",
@@ -1630,7 +1625,6 @@ impl HarnAgentEventKind {
             Self::SessionClosed => "session_closed",
             Self::SessionHealth => "session_health",
             Self::StepJudgeDecision => "step_judge_decision",
-            Self::StructuralValidatorDecision => "structural_validator_decision",
             Self::SubagentJoin => "subagent_join",
             Self::SubagentStop => "subagent_stop",
             Self::ToolBatchDisposition => "tool_batch_disposition",
@@ -1660,7 +1654,6 @@ impl<'de> Deserialize<'de> for HarnAgentEventKind {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "agent_loop_stall_warning" => Self::AgentLoopStallWarning,
-            "agent_scratchpad_reorganization" => Self::AgentScratchpadReorganization,
             "anchor_changed" => Self::AnchorChanged,
             "boundary_failure" => Self::BoundaryFailure,
             "budget_circuit_breaker" => Self::BudgetCircuitBreaker,
@@ -1669,7 +1662,6 @@ impl<'de> Deserialize<'de> for HarnAgentEventKind {
             "cache_miss" => Self::CacheMiss,
             "capability_gap" => Self::CapabilityGap,
             "code_librarian_query_nl_fallback" => Self::CodeLibrarianQueryNlFallback,
-            "compass_routing_decision" => Self::CompassRoutingDecision,
             "composition_child_call" => Self::CompositionChildCall,
             "composition_child_result" => Self::CompositionChildResult,
             "composition_error" => Self::CompositionError,
@@ -1713,7 +1705,6 @@ impl<'de> Deserialize<'de> for HarnAgentEventKind {
             "session_closed" => Self::SessionClosed,
             "session_health" => Self::SessionHealth,
             "step_judge_decision" => Self::StepJudgeDecision,
-            "structural_validator_decision" => Self::StructuralValidatorDecision,
             "subagent_join" => Self::SubagentJoin,
             "subagent_stop" => Self::SubagentStop,
             "tool_batch_disposition" => Self::ToolBatchDisposition,
@@ -2362,8 +2353,6 @@ pub const HARN_ACP_SESSION_UPDATE_EXTENSIONS: &[&str] = &[
 ];
 
 pub const HARN_AGENT_EVENT_KIND_AGENT_LOOP_STALL_WARNING: &str = "agent_loop_stall_warning";
-pub const HARN_AGENT_EVENT_KIND_AGENT_SCRATCHPAD_REORGANIZATION: &str =
-    "agent_scratchpad_reorganization";
 pub const HARN_AGENT_EVENT_KIND_ANCHOR_CHANGED: &str = "anchor_changed";
 pub const HARN_AGENT_EVENT_KIND_BOUNDARY_FAILURE: &str = "boundary_failure";
 pub const HARN_AGENT_EVENT_KIND_BUDGET_CIRCUIT_BREAKER: &str = "budget_circuit_breaker";
@@ -2373,7 +2362,6 @@ pub const HARN_AGENT_EVENT_KIND_CACHE_MISS: &str = "cache_miss";
 pub const HARN_AGENT_EVENT_KIND_CAPABILITY_GAP: &str = "capability_gap";
 pub const HARN_AGENT_EVENT_KIND_CODE_LIBRARIAN_QUERY_NL_FALLBACK: &str =
     "code_librarian_query_nl_fallback";
-pub const HARN_AGENT_EVENT_KIND_COMPASS_ROUTING_DECISION: &str = "compass_routing_decision";
 pub const HARN_AGENT_EVENT_KIND_COMPOSITION_CHILD_CALL: &str = "composition_child_call";
 pub const HARN_AGENT_EVENT_KIND_COMPOSITION_CHILD_RESULT: &str = "composition_child_result";
 pub const HARN_AGENT_EVENT_KIND_COMPOSITION_ERROR: &str = "composition_error";
@@ -2419,8 +2407,6 @@ pub const HARN_AGENT_EVENT_KIND_SEMANTIC_CACHE_MISS: &str = "semantic_cache_miss
 pub const HARN_AGENT_EVENT_KIND_SESSION_CLOSED: &str = "session_closed";
 pub const HARN_AGENT_EVENT_KIND_SESSION_HEALTH: &str = "session_health";
 pub const HARN_AGENT_EVENT_KIND_STEP_JUDGE_DECISION: &str = "step_judge_decision";
-pub const HARN_AGENT_EVENT_KIND_STRUCTURAL_VALIDATOR_DECISION: &str =
-    "structural_validator_decision";
 pub const HARN_AGENT_EVENT_KIND_SUBAGENT_JOIN: &str = "subagent_join";
 pub const HARN_AGENT_EVENT_KIND_SUBAGENT_STOP: &str = "subagent_stop";
 pub const HARN_AGENT_EVENT_KIND_TOOL_BATCH_DISPOSITION: &str = "tool_batch_disposition";
@@ -2432,7 +2418,6 @@ pub const HARN_AGENT_EVENT_KIND_TYPED_CHECKPOINT: &str = "typed_checkpoint";
 /// Pipeline-loop milestone kinds emitted via `_harn/agentEvent`.
 pub const HARN_AGENT_EVENT_KINDS: &[&str] = &[
     "agent_loop_stall_warning",
-    "agent_scratchpad_reorganization",
     "anchor_changed",
     "boundary_failure",
     "budget_circuit_breaker",
@@ -2441,7 +2426,6 @@ pub const HARN_AGENT_EVENT_KINDS: &[&str] = &[
     "cache_miss",
     "capability_gap",
     "code_librarian_query_nl_fallback",
-    "compass_routing_decision",
     "composition_child_call",
     "composition_child_result",
     "composition_error",
@@ -2485,7 +2469,6 @@ pub const HARN_AGENT_EVENT_KINDS: &[&str] = &[
     "session_closed",
     "session_health",
     "step_judge_decision",
-    "structural_validator_decision",
     "subagent_join",
     "subagent_stop",
     "tool_batch_disposition",
@@ -2509,6 +2492,8 @@ pub const AGENT_TERMINAL_CLASS_AGENT_LOOP_PROTOCOL_FAILURE: &str = "agent_loop_p
 pub const AGENT_TERMINAL_CLASS_PARSE_DROPPED: &str = "parse_dropped";
 pub const AGENT_TERMINAL_CLASS_GENERIC_THROW: &str = "generic_throw";
 pub const AGENT_TERMINAL_CLASS_MANAGED_SPEND_PAUSED: &str = "managed_spend_paused";
+pub const AGENT_TERMINAL_CLASS_MANAGED_ALLOWANCE_UNAVAILABLE: &str =
+    "managed_allowance_unavailable";
 
 /// Stable terminal classes carried by typed ACP prompt-error data. Superseded by `HarnAgentTerminalClass`; retained for one release so existing consumers keep compiling.
 pub const AGENT_TERMINAL_CLASSES: &[&str] = &[
@@ -2526,6 +2511,7 @@ pub const AGENT_TERMINAL_CLASSES: &[&str] = &[
     "parse_dropped",
     "generic_throw",
     "managed_spend_paused",
+    "managed_allowance_unavailable",
 ];
 
 pub const AGENT_TERMINAL_KIND_NATURAL: &str = "natural";
@@ -2587,6 +2573,7 @@ pub enum HarnAgentTerminalClass {
     ParseDropped,
     GenericThrow,
     ManagedSpendPaused,
+    ManagedAllowanceUnavailable,
     /// A wire value outside the vocabulary this binding was generated from. Preserved verbatim.
     Unrecognized(String),
 }
@@ -2609,6 +2596,7 @@ impl HarnAgentTerminalClass {
         Self::ParseDropped,
         Self::GenericThrow,
         Self::ManagedSpendPaused,
+        Self::ManagedAllowanceUnavailable,
     ];
 
     /// The JSON wire string for this value.
@@ -2628,6 +2616,7 @@ impl HarnAgentTerminalClass {
             Self::ParseDropped => "parse_dropped",
             Self::GenericThrow => "generic_throw",
             Self::ManagedSpendPaused => "managed_spend_paused",
+            Self::ManagedAllowanceUnavailable => "managed_allowance_unavailable",
             Self::Unrecognized(value) => value.as_str(),
         }
     }
@@ -2649,6 +2638,7 @@ impl HarnAgentTerminalClass {
             "parse_dropped" => Self::ParseDropped,
             "generic_throw" => Self::GenericThrow,
             "managed_spend_paused" => Self::ManagedSpendPaused,
+            "managed_allowance_unavailable" => Self::ManagedAllowanceUnavailable,
             other => Self::Unrecognized(other.to_string()),
         }
     }
@@ -3075,6 +3065,7 @@ pub enum HarnLlmErrorReason {
     Unknown,
     PolicyDenied,
     ManagedSpendPaused,
+    ManagedAllowanceUnavailable,
     /// A wire value outside the vocabulary this binding was generated from. Preserved verbatim.
     Unrecognized(String),
 }
@@ -3099,6 +3090,7 @@ impl HarnLlmErrorReason {
         Self::Unknown,
         Self::PolicyDenied,
         Self::ManagedSpendPaused,
+        Self::ManagedAllowanceUnavailable,
     ];
 
     /// The JSON wire string for this value.
@@ -3120,6 +3112,7 @@ impl HarnLlmErrorReason {
             Self::Unknown => "unknown",
             Self::PolicyDenied => "policy_denied",
             Self::ManagedSpendPaused => "managed_spend_paused",
+            Self::ManagedAllowanceUnavailable => "managed_allowance_unavailable",
             Self::Unrecognized(value) => value.as_str(),
         }
     }
@@ -3143,6 +3136,7 @@ impl HarnLlmErrorReason {
             "unknown" => Self::Unknown,
             "policy_denied" => Self::PolicyDenied,
             "managed_spend_paused" => Self::ManagedSpendPaused,
+            "managed_allowance_unavailable" => Self::ManagedAllowanceUnavailable,
             other => Self::Unrecognized(other.to_string()),
         }
     }
@@ -3779,7 +3773,6 @@ pub struct ACPTranscriptCompactedUpdateMetaHarn {
     pub recap: Value,
     #[serde(rename = "sourceMeasurement")]
     pub source_measurement: Value,
-    pub classification: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayed: Option<bool>,
 }
@@ -4295,7 +4288,6 @@ const TRANSCRIPT_COMPACTED_RULES: &[(&str, SessionUpdateRule)] = &[
         ("/_meta/harn", SessionUpdateRule::Present(&[
             ("/_meta/harn/archivedMessages", SessionUpdateRule::Required),
             ("/_meta/harn/archivedMessages", SessionUpdateRule::Minimum(0)),
-            ("/_meta/harn/classification", SessionUpdateRule::Required),
             ("/_meta/harn/compactionPolicy", SessionUpdateRule::Required),
             ("/_meta/harn/engineStrategy", SessionUpdateRule::Required),
             ("/_meta/harn/estimatedTokensAfter", SessionUpdateRule::Required),
@@ -4619,6 +4611,7 @@ pub struct HarnSessionRecapSource {
 pub struct HarnSessionRecapTextFact {
     pub text: String,
     pub source_event_id: u64,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4869,6 +4862,64 @@ pub struct HarnPlanDocument {
     pub created_at: String,
     pub updated_at: String,
 }
+/// Value-free inference admission vocabulary owned by harn_vm.
+/// Open vocabulary: unit variants are the values this binding was generated from, and `Unrecognized` carries any other string verbatim so a newer Harn never breaks an older consumer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum HarnProviderEndpointConfigurationError {
+    InvalidUrl,
+    NotAbsoluteHttp,
+    /// A wire value outside the vocabulary this binding was generated from. Preserved verbatim.
+    Unrecognized(String),
+}
+
+impl HarnProviderEndpointConfigurationError {
+    /// Every value this binding was generated from, in wire order.
+    /// Excludes the `Unrecognized` escape.
+    pub const KNOWN: &'static [Self] = &[Self::InvalidUrl, Self::NotAbsoluteHttp];
+
+    /// The JSON wire string for this value.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::InvalidUrl => "invalid_url",
+            Self::NotAbsoluteHttp => "not_absolute_http",
+            Self::Unrecognized(value) => value.as_str(),
+        }
+    }
+
+    /// Parse a wire string. An unrecognized value is preserved rather than rejected.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "invalid_url" => Self::InvalidUrl,
+            "not_absolute_http" => Self::NotAbsoluteHttp,
+            other => Self::Unrecognized(other.to_string()),
+        }
+    }
+
+    /// Whether this value is part of the vocabulary this binding was generated from.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Self::Unrecognized(_))
+    }
+}
+
+impl From<String> for HarnProviderEndpointConfigurationError {
+    fn from(value: String) -> Self {
+        Self::from_wire(&value)
+    }
+}
+
+impl From<HarnProviderEndpointConfigurationError> for String {
+    fn from(value: HarnProviderEndpointConfigurationError) -> Self {
+        value.as_str().to_string()
+    }
+}
+
+impl std::fmt::Display for HarnProviderEndpointConfigurationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Value-free inference admission vocabulary owned by harn_vm.
 /// Open vocabulary: unit variants are the values this binding was generated from, and `Unrecognized` carries any other string verbatim so a newer Harn never breaks an older consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -5388,6 +5439,12 @@ pub struct HarnACPPromptCorrelation {
     pub message_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnACPSessionContinuation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnProviderUsage {
     pub run_id: String,
     pub parent_session_id: String,
@@ -5401,6 +5458,16 @@ pub struct HarnProviderUsage {
     pub usage_unknown_calls: i64,
     pub known_cost_usd: serde_json::Number,
     pub cost_usd: Option<serde_json::Number>,
+    pub reported_cache: Option<HarnReportedCacheTotals>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnReportedCacheTotals {
+    pub reported_calls: i64,
+    pub read_reported_calls: i64,
+    pub write_reported_calls: i64,
+    pub read_tokens: i64,
+    pub write_tokens: i64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -5430,13 +5497,6 @@ pub struct HarnAgentsEventProjection {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnAgentEventAgentScratchpadReorganization {
-    pub iteration: u64,
-    pub status: String,
-    pub details: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -5544,23 +5604,6 @@ pub struct HarnAgentEventCodeLibrarianQueryNlFallback {
     #[serde(rename = "resultCount")]
     pub result_count: u64,
     pub text: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnAgentEventCompassRoutingDecision {
-    #[serde(rename = "toolCallId")]
-    pub tool_call_id: String,
-    pub mode: String,
-    pub action: String,
-    pub persona: String,
-    #[serde(rename = "originalTool")]
-    pub original_tool: String,
-    #[serde(rename = "routedTool")]
-    pub routed_tool: String,
-    #[serde(rename = "targetTool")]
-    pub target_tool: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -6076,23 +6119,6 @@ pub struct HarnAgentEventStepJudgeDecision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnAgentEventStructuralValidatorDecision {
-    pub iteration: u64,
-    pub rule: String,
-    pub diagnostic: String,
-    #[serde(rename = "recommendedAction")]
-    pub recommended_action: String,
-    pub vetoed: bool,
-    pub skipped: bool,
-    pub reason: Option<String>,
-    #[serde(rename = "onFailure")]
-    pub on_failure: String,
-    pub attempts: u64,
-    #[serde(rename = "maxAttempts")]
-    pub max_attempts: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnAgentEventSubagentJoin {
     #[serde(rename = "parentSessionId")]
     pub parent_session_id: String,
@@ -6206,8 +6232,6 @@ pub struct HarnAgentEventTypedCheckpoint {
 pub enum HarnAgentEventPayload {
     #[serde(rename = "agent_loop_stall_warning")]
     AgentLoopStallWarning(std::collections::BTreeMap<String, Value>),
-    #[serde(rename = "agent_scratchpad_reorganization")]
-    AgentScratchpadReorganization(HarnAgentEventAgentScratchpadReorganization),
     #[serde(rename = "anchor_changed")]
     AnchorChanged(HarnAgentEventAnchorChanged),
     #[serde(rename = "boundary_failure")]
@@ -6224,8 +6248,6 @@ pub enum HarnAgentEventPayload {
     CapabilityGap(HarnAgentEventCapabilityGap),
     #[serde(rename = "code_librarian_query_nl_fallback")]
     CodeLibrarianQueryNlFallback(HarnAgentEventCodeLibrarianQueryNlFallback),
-    #[serde(rename = "compass_routing_decision")]
-    CompassRoutingDecision(HarnAgentEventCompassRoutingDecision),
     #[serde(rename = "composition_child_call")]
     CompositionChildCall(HarnAgentEventCompositionChildCall),
     #[serde(rename = "composition_child_result")]
@@ -6312,8 +6334,6 @@ pub enum HarnAgentEventPayload {
     SessionHealth(std::collections::BTreeMap<String, Value>),
     #[serde(rename = "step_judge_decision")]
     StepJudgeDecision(HarnAgentEventStepJudgeDecision),
-    #[serde(rename = "structural_validator_decision")]
-    StructuralValidatorDecision(HarnAgentEventStructuralValidatorDecision),
     #[serde(rename = "subagent_join")]
     SubagentJoin(HarnAgentEventSubagentJoin),
     #[serde(rename = "subagent_stop")]
@@ -6328,4 +6348,264 @@ pub enum HarnAgentEventPayload {
     TurnPhaseChanged(HarnAgentEventTurnPhaseChanged),
     #[serde(rename = "typed_checkpoint")]
     TypedCheckpoint(HarnAgentEventTypedCheckpoint),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnCrystallizationKind {
+    Candidate,
+    PlanOnly,
+    Rejected,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnCrystallizationPromotionStatus {
+    Blocked,
+    NeedsApproval,
+    Ready,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnCrystallizationReplayExpectation {
+    Match,
+    Drift,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnCrystallizationSegmentKind {
+    Deterministic,
+    Fuzzy,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationCandidateBundle {
+    pub schema: String,
+    pub schema_version: u64,
+    pub generated_at: String,
+    pub generator: HarnCrystallizationGenerator,
+    pub kind: HarnCrystallizationKind,
+    pub candidate_id: String,
+    pub external_key: String,
+    pub title: String,
+    pub team: Option<String>,
+    pub repo: Option<String>,
+    pub risk_level: String,
+    pub workflow: HarnCrystallizationWorkflowRef,
+    pub source_trace_hashes: Vec<String>,
+    pub source_traces: Vec<HarnCrystallizationSourceTrace>,
+    pub deterministic_steps: Vec<HarnCrystallizationStep>,
+    pub fuzzy_steps: Vec<HarnCrystallizationStep>,
+    pub side_effects: Vec<HarnCrystallizationSideEffect>,
+    pub capabilities: Vec<String>,
+    pub required_secrets: Vec<String>,
+    pub savings: HarnCrystallizationSavingsEstimate,
+    pub shadow: HarnCrystallizationShadowRunReport,
+    pub eval_pack: Option<HarnCrystallizationEvalPackRef>,
+    pub skill: Option<HarnCrystallizationSkillRef>,
+    pub fixtures: Vec<HarnCrystallizationFixtureRef>,
+    pub promotion: HarnCrystallizationPromotion,
+    pub redaction: HarnCrystallizationRedactionSummary,
+    pub confidence: serde_json::Number,
+    pub rejection_reasons: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationEvalPackRef {
+    pub path: String,
+    pub link: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationFixtureRef {
+    pub path: String,
+    pub trace_id: String,
+    pub source_hash: String,
+    pub redacted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationGenerator {
+    pub tool: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationPromotion {
+    pub owner: Option<String>,
+    pub approver: Option<String>,
+    pub author: Option<String>,
+    pub rollout_policy: String,
+    pub rollback_target: Option<String>,
+    pub created_at: String,
+    pub workflow_version: String,
+    pub package_name: String,
+    pub sample_count: u64,
+    pub confidence: serde_json::Number,
+    pub shadow_success_count: u64,
+    pub shadow_failure_count: u64,
+    pub divergence_history: Vec<HarnCrystallizationPromotionDivergenceRecord>,
+    pub approval_history: Vec<HarnCrystallizationPromotionApprovalRecord>,
+    pub criteria: HarnCrystallizationPromotionCriteria,
+    pub estimated_time_token_savings: HarnCrystallizationSavingsEstimate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationRedactionSummary {
+    pub applied: bool,
+    pub rules: Vec<String>,
+    pub summary: String,
+    pub fixture_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationSkillRef {
+    pub path: String,
+    pub gate_receipt_path: String,
+    pub name: String,
+    pub skill_candidate_id: String,
+    pub workflow_candidate_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationSourceTrace {
+    pub trace_id: String,
+    pub source_hash: String,
+    pub source_url: Option<String>,
+    pub source_receipt_id: Option<String>,
+    pub fixture_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationStep {
+    pub index: u64,
+    pub kind: String,
+    pub name: String,
+    pub segment: HarnCrystallizationSegmentKind,
+    pub parameter_refs: Vec<String>,
+    pub side_effects_known: bool,
+    pub side_effects: Vec<HarnCrystallizationSideEffect>,
+    pub capabilities: Vec<String>,
+    pub required_secrets: Vec<String>,
+    pub approval: Option<HarnCrystallizationApproval>,
+    pub review_notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationWorkflowRef {
+    pub path: String,
+    pub name: String,
+    pub package_name: String,
+    pub package_version: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationApproval {
+    pub prompt: Option<String>,
+    pub approver: Option<String>,
+    pub required: bool,
+    pub boundary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationSideEffect {
+    pub kind: String,
+    pub target: String,
+    pub capability: Option<String>,
+    pub mutation: Option<String>,
+    pub metadata: std::collections::BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationPromotionApprovalRecord {
+    pub actor: String,
+    pub decision: String,
+    pub recorded_at: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationPromotionCriteria {
+    pub min_examples: u64,
+    pub min_confidence: serde_json::Number,
+    pub requires_shadow_pass: bool,
+    pub requires_no_rejections: bool,
+    pub requires_human_approval: bool,
+    pub approval_reason: Option<String>,
+    pub status: HarnCrystallizationPromotionStatus,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationPromotionDivergenceRecord {
+    pub trace_id: String,
+    pub path: Option<String>,
+    pub message: String,
+    pub left: Value,
+    pub right: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationReplayDivergence {
+    pub path: String,
+    pub left: Value,
+    pub right: Value,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationReplayOracleReport {
+    pub name: String,
+    pub expectation: HarnCrystallizationReplayExpectation,
+    pub passed: bool,
+    pub first_run_counts: HarnCrystallizationReplayTraceRunCounts,
+    pub second_run_counts: HarnCrystallizationReplayTraceRunCounts,
+    pub protocol_fixture_refs: Vec<String>,
+    pub divergence: Option<HarnCrystallizationReplayDivergence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationReplayTraceRunCounts {
+    pub event_log_entries: u64,
+    pub trigger_firings: u64,
+    pub llm_interactions: u64,
+    pub protocol_interactions: u64,
+    pub approval_interactions: u64,
+    pub effect_receipts: u64,
+    pub persona_runtime_states: u64,
+    pub agent_transcript_deltas: u64,
+    pub final_artifacts: u64,
+    pub policy_decisions: u64,
+    pub channel_receipts: u64,
+    pub lifecycle_receipts: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationSavingsEstimate {
+    pub model_calls_avoided: i64,
+    pub input_tokens_avoided: i64,
+    pub output_tokens_avoided: i64,
+    pub estimated_cost_usd_avoided: serde_json::Number,
+    pub wall_ms_avoided: i64,
+    pub cpu_runtime_cost_usd: serde_json::Number,
+    pub remaining_model_calls: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationShadowRunReport {
+    pub pass: bool,
+    pub compared_traces: u64,
+    pub failures: Vec<String>,
+    pub traces: Vec<HarnCrystallizationShadowTraceResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnCrystallizationShadowTraceResult {
+    pub trace_id: String,
+    pub source_hash: String,
+    pub pass: bool,
+    pub details: Vec<String>,
+    pub compared_receipts: u64,
+    pub replay_oracle: Option<HarnCrystallizationReplayOracleReport>,
 }

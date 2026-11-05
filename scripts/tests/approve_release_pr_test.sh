@@ -27,10 +27,14 @@ for a in "$@"; do
 done
 emit() { if [[ -n "$jq_program" ]]; then jq -r "$jq_program" "$1"; else cat "$1"; fi; }
 case "$args" in
-  *"-X POST"*"/reviews"*) echo "$args" >> "$FIXTURE/approvals"; echo '{}' ;;
+  *"-X POST"*"/reviews"*)
+    echo "$args" >> "$FIXTURE/approvals"
+    for a in "$@"; do [[ "$a" == body=* ]] && printf '%s' "${a#body=}" > "$FIXTURE/review_body"; done
+    echo '{}' ;;
   *graphql*"reviewDecision"*"reviewThreads"*) emit "$FIXTURE/review_state.json" ;;
   *graphql*) emit "$FIXTURE/decision.json" ;;
   *"/releases/latest"*) emit "$FIXTURE/latest.json" ;;
+  *"/releases?"*) emit "$FIXTURE/releases.json" ;;
   *"/commits"*) cat "$FIXTURE/commits.json" ;;
   *"/files"*) cat "$FIXTURE/files.json" ;;
   *"/pulls/"*) cat "$FIXTURE/pr.json" ;;
@@ -58,6 +62,7 @@ fixture() {
     {filename:"changelog.d/1.added.md",status:"removed",patch:"@@ -1 +0,0 @@\n-A change.\n"}
   ]]' > "$dir/files.json"
   echo '{"tag_name":"v0.10.173"}' > "$dir/latest.json"
+  jq -n '[{tag_name:"v0.10.173",draft:false,prerelease:false},{tag_name:"v0.10.172",draft:false,prerelease:false}]' > "$dir/releases.json"
   echo '{"reviewThreads":{"nodes":[]},"reviews":{"totalCount":0}}' > "$dir/review_state.json"
   echo '{"data":{"repository":{"pullRequest":{"reviewDecision":"APPROVED"}}}}' > "$dir/decision.json"
   # The stub applies the script's own --jq to these.
@@ -85,6 +90,16 @@ expect_approved() {
   "$name"
   run "$dir" || { cat "$dir/out" >&2; fail "$name: expected approval"; }
   grep -q "commit_id=$sha" "$dir/approvals" || fail "$name: approval not bound to the head SHA"
+  # A merger counts a bot approval only through this last line; the digest is sha256 of the repository name.
+  local evidence
+  evidence=$(tail -n 1 "$dir/review_body")
+  [[ "$evidence" == "<!-- release-review-author-evidence: "*" -->" ]] \
+    || fail "$name: the approval's last line is not author evidence: $evidence"
+  evidence=${evidence#<!-- release-review-author-evidence: }
+  jq -e --arg sha "$sha" '. == {schema: "review.author_evidence.v1",
+      repository_digest: "68eb7a4567526e3bfea15dc55e24ac5f3ef8fcef1b459ce53011347f530b8c8d",
+      pr: 7, head_sha: $sha, replies: []}' <<< "${evidence% -->}" > /dev/null \
+    || fail "$name: author evidence does not name this repository, pull request and head: $evidence"
 }
 
 # expect_refused <case> <phrase the refusal must contain> [posted]
@@ -103,9 +118,38 @@ expect_refused() {
 release() { :; }
 immutable_release() { edit pr.json '.head.ref = ("release-attempt/v0.10.174/" + .head.sha)'; }
 immutable_mismatch() { edit pr.json '.head.ref = ("release-attempt/v0.10.174/" + ("b" * 40))'; }
+# The version commit after publishing 0.10.173: main moves to 0.10.174, the agent
+# manifest moves up from the release before, and the published version's fragments
+# fold into its changelog section.
 development() {
+  edit pr.json '.title = "[Release] Start 0.10.174 development" | .head.ref = "automation/development-0.10.174"'
+  jq -n '[[
+    {filename:"Cargo.toml",status:"modified",patch:"@@ -1 +1 @@\n-version = \"0.10.173\"\n+version = \"0.10.174\"\n"},
+    {filename:"spec/agent.json",status:"modified",patch:"@@ -1 +1 @@\n-\"version\": \"0.10.172\"\n+\"version\": \"0.10.173\"\n"},
+    {filename:"CHANGELOG.md",status:"modified",patch:"@@ -1,1 +1,3 @@\n+## v0.10.173\n+- A change.\n "},
+    {filename:"changelog.d/1.added.md",status:"removed",patch:"@@ -1 +0,0 @@\n-A change.\n"}
+  ]]' > "$dir/files.json"
+}
+# The one-time cutover from a development identity to the same stable version.
+development_cutover() {
+  edit pr.json '.title = "[Release] Start 0.10.174 development" | .head.ref = "automation/development-0.10.174"'
+  jq -n '[[{filename:"Cargo.toml",status:"modified",patch:"@@ -1 +1 @@\n-version = \"0.10.174-dev\"\n+version = \"0.10.174\"\n"}]]' > "$dir/files.json"
+}
+development_folds_published() {
+  development
+  edit files.json '.[0][2].patch = "@@ -1,2 +1,2 @@\n-## Unreleased\n+## v0.10.173\n "'
+}
+development_folds_wrong_version() {
+  development
+  edit files.json '.[0][2].patch = "@@ -1,2 +1,2 @@\n-## Unreleased\n+## v0.10.174\n "'
+}
+development_older_version() {
+  development
+  edit files.json '.[0][1].patch = "@@ -1 +1 @@\n-\"version\": \"0.10.170\"\n+\"version\": \"0.10.173\"\n"'
+}
+development_old_branch() {
+  development
   edit pr.json '.title = "[Release] Start 0.10.174-dev development" | .head.ref = "automation/development-0.10.174-dev"'
-  jq -n '[[{filename: "Cargo.toml", status: "modified", patch: "@@ -1 +1 @@\n-version = \"0.10.173\"\n+version = \"0.10.174-dev\"\n"}]]' > "$dir/files.json"
 }
 # After a retired, never-published version the stable files name the published
 # predecessor (0.10.177), not the previous patch, and the release folds a parked
@@ -143,6 +187,11 @@ expect_approved release
 expect_approved immutable_release
 expect_refused immutable_mismatch 'immutable attempt ref does not name its head'
 expect_approved development
+expect_approved development_cutover
+expect_approved development_folds_published
+expect_refused development_folds_wrong_version 'without renaming it in place to v0.10.173'
+expect_refused development_older_version 'changes more than the version'
+expect_refused development_old_branch 'not a release or development-bump branch'
 expect_approved retired_predecessor
 expect_refused retired_predecessor_unpublished 'changes more than the version'
 expect_refused fold_without_heading 'without renaming it in place to v0.10.179'

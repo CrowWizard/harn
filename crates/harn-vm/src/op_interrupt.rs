@@ -1,5 +1,11 @@
 //! Native subprocess ownership and interruption.
 
+mod call_scopes;
+pub use call_scopes::{
+    register_active_process_cleanup_scope, signal_active_process_cleanups_for_cancel_token,
+    terminate_active_process_cleanups_for_cancel_token, ActiveProcessCleanupScope,
+};
+
 #[cfg(unix)]
 mod eof_cleanup;
 #[cfg(all(test, unix))]
@@ -39,8 +45,9 @@ pub const PROCESS_OWNER_TOKEN_ENV: &str = "HARN_INTERNAL_PROCESS_OWNER_TOKEN";
 /// How long a subprocess gets to exit after SIGTERM before the whole
 /// process group is SIGKILLed. Deliberately longer than the interpreter's
 /// 250ms async-op cancel grace (`CANCEL_GRACE_ASYNC_OP`): child processes
-/// often need to flush buffers / remove lock files on SIGTERM.
-pub const SUBPROCESS_TERM_GRACE: Duration = Duration::from_secs(2);
+/// often need to flush buffers / remove lock files on SIGTERM. Short enough
+/// that a child ignoring SIGTERM still stops within two seconds of a request.
+pub const SUBPROCESS_TERM_GRACE: Duration = Duration::from_secs(1);
 #[cfg(unix)]
 const SUBPROCESS_KILL_SETTLE: Duration = Duration::from_millis(250);
 
@@ -335,6 +342,7 @@ struct ActiveProcessCleanup {
     pid: Option<u32>,
     cleanup_token: String,
     owner_cancel_token: Option<Arc<AtomicBool>>,
+    scope: Option<Arc<dyn ActiveProcessCleanupScope>>,
 }
 
 static ACTIVE_PROCESS_CLEANUP_ID: AtomicU64 = AtomicU64::new(1);
@@ -398,18 +406,20 @@ pub fn register_active_process_cleanup(
     cleanup_token: &str,
     owner_cancel_token: Option<Arc<AtomicBool>>,
 ) -> ActiveProcessCleanupGuard {
+    register_process_cleanup_entry(ActiveProcessCleanup {
+        pid,
+        cleanup_token: cleanup_token.to_string(),
+        owner_cancel_token,
+        scope: None,
+    })
+}
+
+fn register_process_cleanup_entry(entry: ActiveProcessCleanup) -> ActiveProcessCleanupGuard {
     let id = ACTIVE_PROCESS_CLEANUP_ID.fetch_add(1, Ordering::SeqCst);
     ACTIVE_PROCESS_CLEANUPS
         .lock()
         .expect("active process cleanup registry poisoned")
-        .insert(
-            id,
-            ActiveProcessCleanup {
-                pid,
-                cleanup_token: cleanup_token.to_string(),
-                owner_cancel_token,
-            },
-        );
+        .insert(id, entry);
     ActiveProcessCleanupGuard {
         id,
         terminate_on_drop: false,
@@ -433,18 +443,6 @@ pub fn signal_active_process_cleanups(signal: i32) -> ProcessCleanupReport {
 
 pub fn signal_ownerless_active_process_cleanups(signal: i32) -> ProcessCleanupReport {
     signal_active_process_cleanups_matching(signal, |entry| entry.owner_cancel_token.is_none())
-}
-
-pub fn signal_active_process_cleanups_for_cancel_token(
-    signal: i32,
-    cancel_token: &Arc<AtomicBool>,
-) -> ProcessCleanupReport {
-    signal_active_process_cleanups_matching(signal, |entry| {
-        entry
-            .owner_cancel_token
-            .as_ref()
-            .is_some_and(|owner| Arc::ptr_eq(owner, cancel_token))
-    })
 }
 
 #[cfg(test)]
@@ -493,6 +491,9 @@ fn signal_active_process_cleanups_matching(
 }
 
 fn signal_registered_process(entry: &ActiveProcessCleanup, signal: i32) -> ProcessCleanupReport {
+    if let Some(scope) = &entry.scope {
+        return scope.signal(signal);
+    }
     if let Some(pid) = entry.pid {
         return signal_pid_tree_group_and_token_with_report(
             pid,
@@ -594,9 +595,10 @@ pub fn signal_pid_and_group(pid: u32, signal: i32) {
 }
 
 /// Signal a pid, its process group, and every descendant process visible in
-/// the system process table. Descendants are signalled deepest-first so a
-/// child that escaped into its own process group (for example via `setsid`)
-/// cannot survive a timeout merely because it left the original group.
+/// the system process table, so a child that escaped into its own process group
+/// (for example via `setsid`) cannot survive a timeout merely because it left
+/// the original group. Parents are signalled before their children: a shell
+/// whose foreground child dies first moves on to its next statement.
 pub fn signal_pid_tree_and_group(pid: u32, signal: i32) {
     let _ = signal_pid_tree_and_group_with_report(pid, signal);
 }
@@ -620,7 +622,10 @@ pub fn signal_pid_tree_group_and_token_with_report(
     #[cfg(unix)]
     {
         let mut report = ProcessCleanupReport::for_signal(Some(pid), signal);
-        for child in descendant_processes(pid) {
+        // Read the parent edges first: they are gone once the root has died.
+        let descendants = descendant_processes(pid);
+        signal_pid_and_group(pid, signal);
+        for child in descendants.into_iter().rev() {
             signal_pid_and_group(child.pid, signal);
             report.merge_child(child.with_signal(signal));
         }
@@ -633,7 +638,6 @@ pub fn signal_pid_tree_group_and_token_with_report(
                 report.merge_child(child.with_signal(signal));
             }
         }
-        signal_pid_and_group(pid, signal);
         if signal == 9 {
             wait_for_report_children_to_exit(&report, SUBPROCESS_KILL_SETTLE);
         }
@@ -708,7 +712,9 @@ pub fn signal_pid_tree_and_token_preserving_group_with_report(
 ) -> ProcessCleanupReport {
     let preserved_pgid = preserved_pgid as i32;
     let mut report = ProcessCleanupReport::for_signal(Some(pid), signal);
-    for child in descendant_processes(pid) {
+    let descendants = descendant_processes(pid);
+    signal_pid_preserving_group(pid, preserved_pgid, signal);
+    for child in descendants.into_iter().rev() {
         signal_pid_preserving_group(child.pid, preserved_pgid, signal);
         report.merge_child(child.with_signal(signal));
     }
@@ -728,7 +734,6 @@ pub fn signal_pid_tree_and_token_preserving_group_with_report(
             }
         }
     }
-    signal_pid_preserving_group(pid, preserved_pgid, signal);
     report
 }
 

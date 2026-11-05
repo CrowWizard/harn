@@ -506,6 +506,21 @@ impl ModePolicyScope {
         }
     }
 
+    /// Hold this turn's children to the server's egress proxy. A mode below
+    /// the network side-effect level has no child network to hold, and the
+    /// proxy would be what gave it one.
+    pub(super) fn with_child_egress(mut self, egress: &super::child_egress::ChildEgress) -> Self {
+        if let Some(policy) = self.policy.as_mut() {
+            policy.process_sandbox.deny_network |= egress.denies_network();
+            let level = policy.side_effect_level.as_deref().unwrap_or("none");
+            let network = harn_vm::tool_annotations::SideEffectLevel::Network.rank();
+            if harn_vm::tool_annotations::SideEffectLevel::rank_str(level) >= network {
+                policy.process_network_proxy = egress.endpoints();
+            }
+        }
+        self
+    }
+
     /// Run one asynchronous span of the turn with this turn's policy installed
     /// around every poll of `inner`, and nobody else's.
     ///
@@ -1168,12 +1183,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn concurrent_prompt_turns_keep_their_own_llm_budget_and_session_spend() {
         use std::future::Future;
-        use std::task::{Context, Poll, Wake, Waker};
-
-        struct NoopWake;
-        impl Wake for NoopWake {
-            fn wake(self: std::sync::Arc<Self>) {}
-        }
+        use std::task::{Context, Poll, Waker};
 
         async fn turn(scope: &ModePolicyScope, max: f64, seed: f64, tokens: u64) {
             scope
@@ -1197,8 +1207,7 @@ mod tests {
         let second = ModePolicyScope::new("code", &AcpSandboxConfig::default());
         let mut first_turn = Box::pin(turn(&first, 1.0, 0.25, 10));
         let mut second_turn = Box::pin(turn(&second, 2.0, 0.5, 20));
-        let waker = Waker::from(std::sync::Arc::new(NoopWake));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         assert!(first_turn.as_mut().poll(&mut cx).is_pending());
         assert!(second_turn.as_mut().poll(&mut cx).is_pending());
         assert_eq!(first_turn.as_mut().poll(&mut cx), Poll::Ready(()));

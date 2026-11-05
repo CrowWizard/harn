@@ -232,22 +232,6 @@
       "jsonrpc": "2.0",
       "method": "_harn/agentEvent",
       "params": {
-        "action": "rewritten",
-        "kind": "compass_routing_decision",
-        "mode": "rewrite",
-        "originalTool": "str_replace",
-        "path": "src/lib.rs",
-        "persona": "fixer",
-        "routedTool": "edit_safe_text_patch",
-        "sessionId": "session-1",
-        "targetTool": "edit_safe_text_patch",
-        "toolCallId": "tool-edit-1"
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "_harn/agentEvent",
-      "params": {
         "kind": "session_closed",
         "metadata": {
           "idle_ms": 5000
@@ -302,18 +286,12 @@
       "jsonrpc": "2.0",
       "method": "_harn/agentEvent",
       "params": {
-        "attempts": 0,
-        "diagnostic": "Assistant emitted no tool calls while writable tools were available.",
-        "iteration": 1,
-        "kind": "structural_validator_decision",
-        "maxAttempts": 3,
-        "onFailure": "regenerate_with_feedback",
-        "reason": null,
-        "recommendedAction": "Emit the concrete write or edit tool call needed for the task, or only mark the task done after that work is complete.",
-        "rule": "non_empty_when_writes_expected",
-        "sessionId": "session-1",
-        "skipped": false,
-        "vetoed": true
+        "checkpoint": {
+          "stage": "verify",
+          "type": "stage_gate"
+        },
+        "kind": "typed_checkpoint",
+        "sessionId": "session-1"
       }
     },
     {
@@ -419,18 +397,6 @@
           "state": "running"
         },
         "kind": "model_job",
-        "sessionId": "session-1"
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "_harn/agentEvent",
-      "params": {
-        "checkpoint": {
-          "stage": "verify",
-          "type": "stage_gate"
-        },
-        "kind": "typed_checkpoint",
         "sessionId": "session-1"
       }
     },
@@ -731,6 +697,7 @@
           "output_tokens": 1,
           "parent_session_id": "",
           "provider_call_count": 2,
+          "reported_cache": null,
           "run_id": "run-1",
           "unpriced_calls": 1,
           "usage_unknown_calls": 1

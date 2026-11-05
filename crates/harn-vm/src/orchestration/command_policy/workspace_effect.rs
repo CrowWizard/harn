@@ -28,6 +28,10 @@ use crate::value::{VmError, VmValue};
 use super::command_risk_scan_json;
 use super::scan::{command_text, risk_labels_from_scan, security_command_analysis};
 
+#[path = "gh_read.rs"]
+mod gh_read;
+pub(crate) use gh_read::{gh_invocation_is_read_only, gh_read, GhRead};
+
 /// Risk labels that positively establish a workspace write.
 ///
 /// Presence proves a write; absence proves nothing, which is the whole reason
@@ -170,6 +174,7 @@ fn standalone_program_is_read_only(program: &str, args: &[String]) -> bool {
             .iter()
             .any(|arg| arg == "-o" || arg.starts_with("--output=")),
         "sed" => sed_invocation_is_read_only(args),
+        "gh" => gh_invocation_is_read_only(args),
         "yq" => !args.iter().any(|arg| {
             arg == "-i"
                 || arg == "--inplace"
@@ -604,6 +609,137 @@ mod tests {
             "git show --ext-diff HEAD",
             "git grep --open-files-in-pager=touch needle",
             "git ls-remote --upload-pack='touch changed' .",
+        ] {
+            assert_ne!(effect(command), "read_effect", "{command}");
+        }
+    }
+
+    #[test]
+    fn gh_reads_are_observations_and_gh_writes_are_not() {
+        for command in [
+            "gh pr list --state open",
+            "gh issue view 12 --comments",
+            "gh pr checks 7",
+            "gh pr diff 7",
+            "gh run view 99 --log",
+            "gh status",
+            "gh api repos/o/r/pulls",
+            "gh api -X GET repos/o/r/issues",
+            "gh api --method=get repos/o/r",
+            "gh api -iXGET repos/o/r",
+            "gh api -X=GET repos/o/r",
+            "gh api --include --paginate --slurp repos/o/r",
+            "gh api -H Accept:application/json repos/o/r",
+            "gh api --header=x-github-api-version:2022-11-28 repos/o/r",
+            "gh api --preview=corsair --cache 1h repos/o/r",
+            "gh -R o/r pr view 1",
+            "gh pr view --repo=o/r 1",
+            "gh --hostname h.example issue list",
+            "gh pr view -c 1",
+            "gh pr view --comments 1",
+            "gh pr list -dL5",
+            "gh pr list -d -L 5",
+            "gh pr list --state=open",
+            "gh pr checks --required --watch 7",
+            "gh pr diff --name-only 7",
+            "gh issue list -lbug -sopen",
+            "gh run list -w ci",
+            "gh run list -aw ci",
+            "gh run view -va 2 99",
+            "gh workflow view -y ci",
+            "gh gist view -r abc",
+            "gh repo view -b main",
+        ] {
+            assert_eq!(effect(command), "read_effect", "{command}");
+        }
+        for command in [
+            "gh pr create --fill",
+            "gh issue comment 12 --body hi",
+            "gh pr merge 7 --squash",
+            "gh issue close 12",
+            "gh pr edit 7 --title t",
+            "gh issue reopen 12",
+            "gh release list",
+            "gh release create v1",
+            "gh repo create o/r",
+            "gh repo edit --visibility public",
+            "gh repo delete o/r",
+            "gh repo fork o/r",
+            "gh api -X POST repos/o/r/issues",
+            "gh api --method DELETE repos/o/r",
+            "gh api -XPATCH repos/o/r",
+            "gh api repos/o/r/issues -f title=t",
+            "gh api repos/o/r/issues -Ftitle=t",
+            "gh api graphql --raw-field query=q",
+            "gh api repos/o/r --input body.json",
+            "gh api repos/o/r --input=body.json",
+            "gh api -iXDELETE repos/o/r/git/refs/heads/main",
+            "gh api -iX DELETE repos/o/r",
+            "gh api -X=DELETE repos/o/r",
+            "gh api -p= -XDELETE repos/o/r",
+            "gh api -p -R -XDELETE -i repos/o/r",
+            "gh api --method=POST repos/o/r",
+            "gh api -iFname=x repos/o/r",
+            "gh api -ifname=x repos/o/r",
+            "gh api -f=name=x repos/o/r",
+            "gh api --raw-field=name=x repos/o/r",
+            "gh api --field=name=x repos/o/r",
+            "gh api --unknown repos/o/r",
+            "gh api --unknown=x repos/o/r",
+            "gh api -Z repos/o/r",
+            "gh api -iZ repos/o/r",
+            "gh api - repos/o/r",
+            "gh api --include=true repos/o/r",
+            "gh api --verbose repos/o/r",
+            "gh api -H X-HTTP-Method-Override:DELETE repos/o/r",
+            "gh api --header=X-HTTP-Method-Override:DELETE repos/o/r",
+            "gh api repos/o/r repos/o/other",
+            "gh api -X",
+            "gh api",
+            "gh pr view 7 --web",
+            "gh pr view -w 7",
+            "gh pr view -cw 7",
+            "gh pr view -wc 7",
+            "gh pr view --web=true 7",
+            "gh pr view --comments=true 7",
+            "gh issue view -cw 12",
+            "gh issue list -w",
+            "gh pr list -dw",
+            "gh pr checks -w 7",
+            "gh pr diff -w 7",
+            "gh run view -vw 99",
+            "gh gist view -rw abc",
+            "gh repo view -w",
+            "gh label list -w",
+            "gh workflow view -yw ci",
+            "gh pr view -Z 7",
+            "gh pr view -cZ 7",
+            "gh pr view --unknown 7",
+            "gh pr view - 7",
+            "gh pr view --help",
+            "gh pr list -L",
+            "gh pr diff --allow-escape-sequences 7",
+            "gh gist diff abc",
+            "gh repo status",
+            "gh status --org o",
+            "gh extension-name",
+            "gh pr checkout 7",
+            "gh -R o/r pr checkout 7",
+            "gh pr co 7",
+            "gh co 7",
+            "gh repo clone o/r",
+            "gh -R o/r repo clone o/r -- -c filter.a.smudge=x",
+            "gh repo fork o/r --clone",
+            "gh repo sync",
+            "gh gist clone x",
+            "gh workflow run ci",
+            "gh extension install o/gh-x",
+            "gh alias set co 'pr checkout'",
+            "gh codespace ssh",
+            "gh ssh-key add k.pub",
+            "gh secret set X",
+            "gh -R",
+            "gh",
         ] {
             assert_ne!(effect(command), "read_effect", "{command}");
         }

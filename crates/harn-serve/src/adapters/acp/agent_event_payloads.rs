@@ -69,14 +69,6 @@ open_kinds! {
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentScratchpadReorganization {
-    pub iteration: usize,
-    pub status: String,
-    pub details: Value,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct AnchorChanged {
     pub previous: Option<Value>,
     pub current: Value,
@@ -163,20 +155,6 @@ pub struct CodeLibrarianQueryNlFallback {
     pub mcts_expansions: usize,
     pub result_count: usize,
     pub text: String,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CompassRoutingDecision {
-    pub tool_call_id: String,
-    pub mode: String,
-    pub action: String,
-    pub persona: String,
-    pub original_tool: String,
-    pub routed_tool: String,
-    pub target_tool: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 /// The run envelope shared by `composition_start`, `composition_finish`, and
@@ -636,21 +614,6 @@ pub struct StepJudgeDecision {
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct StructuralValidatorDecision {
-    pub iteration: usize,
-    pub rule: String,
-    pub diagnostic: String,
-    pub recommended_action: String,
-    pub vetoed: bool,
-    pub skipped: bool,
-    pub reason: Option<String>,
-    pub on_failure: String,
-    pub attempts: usize,
-    pub max_attempts: usize,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct SubagentJoin {
     pub parent_session_id: String,
     pub parent_run_id: String,
@@ -787,7 +750,6 @@ macro_rules! agent_event_registry {
 
 agent_event_registry! {
     "agent_loop_stall_warning" => AgentLoopStallWarning,
-    "agent_scratchpad_reorganization" => AgentScratchpadReorganization,
     "anchor_changed" => AnchorChanged,
     "boundary_failure" => BoundaryFailure,
     "budget_circuit_breaker" => BudgetCircuitBreaker,
@@ -796,7 +758,6 @@ agent_event_registry! {
     "cache_miss" => CacheMiss,
     "capability_gap" => CapabilityGap,
     "code_librarian_query_nl_fallback" => CodeLibrarianQueryNlFallback,
-    "compass_routing_decision" => CompassRoutingDecision,
     "composition_child_call" => CompositionChildCall,
     "composition_child_result" => CompositionChildResult,
     "composition_error" => CompositionError,
@@ -840,7 +801,6 @@ agent_event_registry! {
     "session_closed" => SessionClosed,
     "session_health" => SessionHealth,
     "step_judge_decision" => StepJudgeDecision,
-    "structural_validator_decision" => StructuralValidatorDecision,
     "subagent_join" => SubagentJoin,
     "subagent_stop" => SubagentStop,
     "tool_batch_disposition" => ToolBatchDisposition,

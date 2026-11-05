@@ -362,19 +362,11 @@
         "name": "opts"
       },
       {
-        "function": "__agent_projection_with_scratchpad_barrier",
-        "name": "opts"
-      },
-      {
         "function": "__agent_required_tools_from_options",
         "name": "opts"
       },
       {
         "function": "__clear_tool_format_resolution",
-        "name": "opts"
-      },
-      {
-        "function": "__completion_claim_requirement_ids",
         "name": "opts"
       },
       {
@@ -558,10 +550,6 @@
         "name": "options"
       },
       {
-        "function": "agent_completion_claim_apply_options",
-        "name": "options"
-      },
-      {
         "function": "agent_lifecycle_tools",
         "name": "options"
       },
@@ -571,18 +559,6 @@
       },
       {
         "function": "agent_required_tools_missing_from_session",
-        "name": "opts"
-      },
-      {
-        "function": "agent_scratchpad_init",
-        "name": "opts"
-      },
-      {
-        "function": "agent_scratchpad_options",
-        "name": "opts"
-      },
-      {
-        "function": "agent_scratchpad_recitation_fragment",
         "name": "opts"
       },
       {
@@ -803,6 +779,10 @@
         "name": "opts"
       },
       {
+        "function": "__first_ladder_step",
+        "name": "opts"
+      },
+      {
         "function": "__explicit_tool_format",
         "name": "opts"
       },
@@ -891,10 +871,6 @@
       },
       {
         "function": "__run_pre_turn_scope_classifier",
-        "name": "turn_opts"
-      },
-      {
-        "function": "__run_structural_validator",
         "name": "turn_opts"
       },
       {
@@ -1048,10 +1024,6 @@
       {
         "function": "agent_stall_turn_end_judge_due",
         "name": "opts"
-      },
-      {
-        "function": "__run_structural_validator",
-        "name": "llm_opts"
       },
       {
         "function": "__sync_tool_search_state",

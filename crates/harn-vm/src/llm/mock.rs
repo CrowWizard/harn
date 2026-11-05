@@ -875,6 +875,11 @@ fn build_mock_result(
         logprobs: mock.logprobs.clone(),
         telemetry: Box::new(ProviderTelemetry {
             effective_reasoning_effort: mock.effective_reasoning_effort.clone(),
+            reported_cache_usage: Some(Box::new(super::usage::ReportedCacheUsage {
+                read_tokens: mock.cache_read_tokens,
+                write_tokens: mock.cache_write_tokens,
+            }))
+            .filter(|usage| usage.has_any()),
             ..ProviderTelemetry::mock_replay(mock.simulated_cost_usd)
         }),
         ..Default::default()
@@ -884,6 +889,30 @@ fn build_mock_result(
 fn allocate_mock_tool_call_id(next_tool_call_id: &mut u64) -> String {
     *next_tool_call_id += 1;
     format!("mock_call_{next_tool_call_id}")
+}
+
+fn restored_mock_tool_call_high_water(messages: &[serde_json::Value]) -> u64 {
+    messages
+        .iter()
+        .flat_map(|message| {
+            [
+                message.get("tool_calls"),
+                message.pointer("/_harn/tool_calls"),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+        })
+        .filter_map(|call| {
+            call.get("id")?
+                .as_str()?
+                .strip_prefix("mock_call_")?
+                .parse()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 // Mock prompt patterns match free prose, where `?`/`[`/`{` are ordinary
@@ -966,6 +995,10 @@ fn apply_mock_prompt_cache(result: &mut LlmResult, cache_key: &str) {
         result.cache_write_tokens = cache_tokens;
     }
     result.cache_counts_reported = true;
+    result.telemetry.reported_cache_usage = Some(Box::new(super::usage::ReportedCacheUsage {
+        read_tokens: Some(result.cache_read_tokens),
+        write_tokens: Some(result.cache_write_tokens),
+    }));
 }
 
 /// Convert a mock's `error` payload into the `VmError` that the
@@ -1052,9 +1085,14 @@ fn build_scoped_match(
     ScopedMatch { outcome, receipt }
 }
 
-fn try_match_builtin_mock(scope: &str, match_text: &str) -> Option<ScopedMatch> {
+fn try_match_builtin_mock(
+    scope: &str,
+    match_text: &str,
+    restored_high_water: u64,
+) -> Option<ScopedMatch> {
     with_mock_state_mut(|state| {
         let selected = state.builtin_queue.match_request(scope, match_text)?;
+        state.next_tool_call_id = state.next_tool_call_id.max(restored_high_water);
         Some(build_scoped_match(
             selected,
             match_text,
@@ -1067,6 +1105,7 @@ fn try_match_cli_mock(
     cli_scope: Option<u64>,
     scope: &str,
     match_text: &str,
+    restored_high_water: u64,
 ) -> Option<ScopedMatch> {
     let cli_scope = cli_scope?;
     let mut scopes = cli_llm_mock_scopes();
@@ -1075,6 +1114,7 @@ fn try_match_cli_mock(
         return None;
     }
     let selected = state.queue.match_request(scope, match_text)?;
+    state.next_tool_call_id = state.next_tool_call_id.max(restored_high_water);
     Some(build_scoped_match(
         selected,
         match_text,
@@ -1232,15 +1272,20 @@ pub(crate) fn mock_llm_response(
     set_mock_stream_chunks(None);
 
     let messages = &request.messages;
+    // A fresh fixture scope may serve an existing conversation after restore.
+    let restored_high_water = restored_mock_tool_call_high_water(messages);
     let system = request.system.as_deref();
     let match_text = mock_match_text(messages);
     let prompt_text = mock_last_prompt_text(messages);
     let requested_scope = request.mock_scope.as_deref().unwrap_or(DEFAULT_MOCK_SCOPE);
     let cache_key = mock_prompt_cache_key(&request.model, messages, system, requested_scope);
 
-    if let Some(matched) =
-        try_match_cli_mock(request.cli_llm_mock_scope, requested_scope, &match_text)
-    {
+    if let Some(matched) = try_match_cli_mock(
+        request.cli_llm_mock_scope,
+        requested_scope,
+        &match_text,
+        restored_high_water,
+    ) {
         record_mock_receipt(
             request.session_id.as_deref(),
             MockConsumptionSource::CliReplay,
@@ -1254,7 +1299,8 @@ pub(crate) fn mock_llm_response(
         });
     }
 
-    if let Some(matched) = try_match_builtin_mock(requested_scope, &match_text) {
+    if let Some(matched) = try_match_builtin_mock(requested_scope, &match_text, restored_high_water)
+    {
         record_mock_receipt(
             request.session_id.as_deref(),
             MockConsumptionSource::Builtin,
@@ -1311,6 +1357,7 @@ pub(crate) fn mock_llm_response(
             let tool_name = mock_tool_name(first_tool).unwrap_or("unknown");
             let mock_args = mock_required_args(first_tool);
             let tool_call_id = with_mock_state_mut(|state| {
+                state.next_tool_call_id = state.next_tool_call_id.max(restored_high_water);
                 allocate_mock_tool_call_id(&mut state.next_tool_call_id)
             });
             let mut result = LlmResult {

@@ -17,6 +17,7 @@ mod agents_api;
 mod canonical_history;
 mod connector_setup;
 mod constants;
+mod crystallization;
 mod external_action;
 mod harn_records;
 mod inference_admission;
@@ -28,6 +29,7 @@ mod provider_usage;
 mod recap_records;
 mod records;
 mod schema_records;
+mod session_continuation;
 mod session_recap;
 mod session_update_payloads;
 mod session_update_rust_validation;
@@ -147,6 +149,7 @@ fn generate_artifacts(source: &ProtocolArtifactSource) -> Result<Vec<Artifact>, 
     let activity = ActivityVocabulary::load(source)?;
     let session_updates = session_update_payloads::SessionUpdatePayloads::load(source)?;
     let agent_events = agent_event_payloads::AgentEventPayloads::load()?;
+    let bundle = crystallization::BundleProjection::load()?;
     let go_artifact = format_go_source(agent_events.append(
         agents.append(generate_go_artifact(&session_updates)?, Target::Go),
         Target::Go,
@@ -288,6 +291,28 @@ fn generate_artifacts(source: &ProtocolArtifactSource) -> Result<Vec<Artifact>, 
             schema.artifact,
             source.read_text(schema.source)?,
         ));
+    }
+    artifacts.push(Artifact::new(
+        harn_vm::orchestration::CRYSTALLIZATION_BUNDLE_SCHEMA_ARTIFACT,
+        bundle.schema_json()?,
+    ));
+    for artifact in &mut artifacts {
+        let target = match artifact.relative_path.as_str() {
+            "HarnProtocol.swift" => records::Target::Swift,
+            "harn-protocol.ts" => records::Target::Typescript,
+            "harn-protocol.rs" => records::Target::Rust,
+            "python/harn_protocol.py" => records::Target::Python,
+            "go/harnprotocol/harnprotocol.go" => records::Target::Go,
+            _ => continue,
+        };
+        artifact.contents = bundle.append(std::mem::take(&mut artifact.contents), target);
+        artifact.contents = match target {
+            records::Target::Go => format_go_source(artifact.contents.clone())?,
+            records::Target::Rust => {
+                format_rust_source(artifact.contents.clone(), source.repo_root())?
+            }
+            _ => artifact.contents.clone(),
+        };
     }
     artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(artifacts)

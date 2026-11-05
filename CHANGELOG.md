@@ -9,6 +9,403 @@ Condensed pre-v0.6 highlights live in
 Harn had no external users before 0.6.0, so that archive intentionally
 keeps condensed series summaries instead of full per-patch history.
 
+## v0.10.187
+
+### Breaking
+
+- **Sandboxed sessions can hold children to a host list.** `AcpSandboxConfig::child_network_allow` holds each
+  confined child with network authority to one deny-by-default proxy that admits only the listed hosts.
+  `ProcessSandboxPolicy::deny_network` gives a child no IP networking at any side-effect level.
+
+  Migration: Rust consumers constructing `AcpSandboxConfig` or `ProcessSandboxPolicy` literals must provide the new
+  fields or use `..Default::default()`. `None` and `false` keep today's behavior.
+
+- **Cache usage preserves omitted read and write counts separately (#7320).**
+  vLLM cache accounting now recognizes `created_cache_tokens`. Missing counters
+  stay unknown through retries, live notifications, and saved run reports;
+  explicit zeros remain measurements. A combined hit rate requires read counts
+  from every provider call. Atlas and Hunyuan streams now retain terminal
+  usage according to their documented compatibility APIs; their cache contracts
+  remain unverified.
+
+  Migration: Rust consumers constructing `CacheCounts` set `reported` to
+  `ReportedCacheUsage { read_tokens: Some(read), write_tokens: Some(write) }`
+  instead of `true`. Use `None` for each omitted category. Consumers constructing
+  `LlmUsage` or `ProviderUsage` set `reported_cache` to the measured
+  `ReportedCacheTotals`, or `None` when no category was measured. Fold totals with
+  `record(ReportedCacheUsage)` or `merge(&ReportedCacheTotals)`; inspect
+  `read_reported_calls` and `write_reported_calls` for category coverage.
+
+  Generated Swift and Python writers preserve schema-required nulls, including
+  unknown cache usage. Swift decoders now reject missing required nullable keys;
+  supply explicit nulls when constructing wire objects, including plan-step
+  `priority`. Optional fields can still be omitted.
+- **ACP closed-session continuations (#11006).** Clients can return a closed
+  turn's continuation when loading the same conversation to reuse unchanged
+  history without duplicate replay. Reopening still admits fresh workspace
+  and environment authority; changed history uses ordinary replay, and private
+  inputs remain retired. Ordinary replay also restores the model's conversation
+  and tool-call ID sequence.
+
+  Migration: Rust callers constructing `AcpSessionLoadParams` literals must add
+  `continuation: None`, or use `AcpSessionLoadParams::new` and optionally
+  `with_continuation`. `EmbeddedAgentClient::close_session` now returns
+  `AcpSessionCloseResult`; callers can retain its continuation or discard the
+  result. Obtain `CanonicalSessionReplay` through the canonical replay loader
+  rather than constructing a literal, because it now carries validated model
+  history as well as client events. ACP clients that omit continuation keep
+  the ordinary replay protocol.
+- **Session recaps retain prompt identities.** Public prompt facts include the caller's message
+  identity when the journal recorded one, allowing hosts to reconnect restored prompts to their
+  workspace checkpoints.
+
+  Migration: Rust consumers constructing `RecapTextFact` literals must provide `message_id`.
+  Use the recorded caller identity for a user prompt, or `None` when it is unavailable or the
+  text is from an assistant. Regenerate strict protocol bindings before consuming the new field.
+
+### Added
+
+- Child-process egress through the managed proxy now works on Linux when the policy names the namespace launcher.
+  The child runs in a private network namespace whose only way out is the proxy, so raw sockets, datagrams, and
+  direct DNS have no route.
+
+- Add an offline Claude thread wire-state primitive with exclusive cursor ownership,
+  full-history recovery and deterministic protocol tests. Existing sessions and
+  provider dispatch do not activate it; live route qualification remains separate.
+
+### Changed
+
+- The pinned Rust toolchain is now 1.99.1 and the workspace minimum supported
+  Rust version is 1.99, so building Harn from source needs Rust 1.99 or newer.
+  The orchestrator container image builds on `rust:1.99-bookworm`.
+
+### Fixed
+
+- Darwin sandbox preparation creates its required temporary alias before scheduling
+  dangling-alias cleanup on a background thread. A nonblocking process lock permits
+  only one cleanup scan at a time; alias validation, creation and per-candidate
+  rechecks retain their existing locks and confinement.
+- The Together Qwen3.8 serverless route now records its November 4 retirement
+  and replacement. OpenAI GPT-5.6 Sol cost estimates return to standard rates on
+  November 30.
+- Retention sweeps, host-lease wait accounting, and the scheduler no longer treat a start time ahead of "now"
+  (clock skew, restored backup) as an enormous age. The new `harn_clock::elapsed_ms` clamps it to zero, so such
+  sessions are not soft- or hard-deleted early and a lease wait keeps its full budget.
+  `harn_clock::offset_datetime_to_ms` now floors pre-epoch instants.
+- Confined commands now get a credential-free `GH_CONFIG_DIR` stand-in. GitHub CLI exits on the denied
+  `hosts.yml` even when `GH_TOKEN` is set, so `gh` failed with a permission error inside every sandbox.
+  The stand-in carries `config.yml` (aliases, git protocol, editor) and never `hosts.yml`.
+- Output redaction now covers only credentials a grant hands to a child. A session-wide `env:` grant
+  that carries a path or a mode, and a literal grant, stay readable in command output, events and
+  transcripts.
+- The Linux process sandbox now lets confined commands use POSIX semaphores, so Python's
+  `multiprocessing.Lock()` and the linters and test runners built on process pools no longer fail
+  with `PermissionError: [Errno 13]`. Bubblewrap and namespaced launches get a private `/dev/shm`;
+  Landlock-only launches can read, write, and delete the same user's shared-memory segments there.
+  Shared values, arrays, and `shared_memory` still need truncation, which stays denied.
+- Skip Apple's Git installer shim during sandbox configuration discovery when no installed Git is available,
+  so starting a session does not request developer tools.
+- The macOS process sandbox now allows POSIX named semaphores, so Python's `multiprocessing.Lock()`
+  and the linters and test runners built on process pools no longer fail with `PermissionError: [Errno 1]`.
+  The network stays closed.
+- A confined child now keeps a toolchain cache variable (`UV_CACHE_DIR`, `GOMODCACHE`, `XDG_CACHE_HOME`, and the rest of
+  the toolchain cache set) that the launcher pointed under one of the policy's `process_sandbox.write_roots`. Before, any
+  inherited cache path outside the workspace was replaced with an empty sandbox cache, so a warm package cache an embedder
+  had granted for writing was never used and an offline resolve failed in the child. A path outside both the workspace
+  and the write roots is still relocated.
+- A confined child keeps a working temp dir and toolchain cache when the sandbox runtime dir cannot be created, such as
+  in a container with `HOME` unset or unwritable. It warns and uses the self-ignored `.harn-tmp` and
+  `.harn-toolchain-cache` in the first workspace root. The runtime dir is now named `.harn-sandbox`, so a project's own
+  `harn-sandbox` directory is no longer skipped by file walks.
+- A confined child's temp dir and toolchain cache no longer live inside the workspace. They moved from `.harn-tmp`
+  and `.harn-toolchain-cache` in the first workspace root to a per-workspace runtime dir in the user cache directory
+  (`~/Library/Caches/.harn-sandbox/<digest>` on macOS, `$XDG_CACHE_HOME/.harn-sandbox/<digest>` or
+  `~/.cache/.harn-sandbox/<digest>` elsewhere), so a linter or test collector walking the project no longer finds the
+  child's temporary files. The runtime dir is owner-only, refuses a symlinked or foreign-owned component, and is
+  granted to every backend, including runs restricted to declared roots. A root that covers a workspace still covers
+  its temp dir, so a policy narrowed to a directory made there stays inside the enclosing policy. A script's own scratch
+  from `harness.fs.workspace_temp_dir()` and `mkdtemp_in_workspace` stays in `.harn-tmp` inside the workspace. Existing
+  `.harn-toolchain-cache` directories are no longer used and can be deleted.
+- A `for_command` grant now reaches a shell-mode command that is exactly one plain command naming that
+  program: Harn spawns the command directly, without the shell, so `gh issue list` in shell mode
+  receives a `for_command: "gh"` grant and nothing else does. Compound commands keep the shell and get
+  no command-bound grant. A `gh` grant reaches only `gh` reads (`list`, `view`, `status`, `diff`,
+  `checks`, and GET `gh api`), after skipping `-R`, `--repo` and `--hostname`; checkouts, clones,
+  forks, writes, aliases, extensions and unrecognized subcommands run without it. It reaches only the
+  native `gh` executable resolved from trusted `PATH` entries outside every workspace and write root,
+  through a foreground `run_command`, and never a script or version-manager shim. The granted `gh`
+  gets a fresh owner-only config and extension directory outside those roots, an empty pager, a
+  refusing browser and editor, a trusted `PATH`, and git hooks, fsmonitor and `ext::` remotes turned
+  off. The token is never in gh's environment: it is stored as a github.com login in the per-spawn
+  `hosts.yml`, which every other confined child is denied, so gh sends it to no other host. A granted
+  spawn removes directories a crashed spawn left behind. A granted
+  `gh` keeps only `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` and `NO_COLOR` from its caller; proxy, TLS,
+  debug and token variables are dropped. A granted read is refused when it names `--jq`, `-q`,
+  `--template` or `-t`, passes arguments after `--`, names a host other than github.com, or names a URL scheme other than
+  `https`, and when
+  a write root overlaps the user's git, SSH or gh configuration.
+  `gh auth token` and the other `gh auth` subcommands that print the credential are refused. Every
+  granted credential, for any program, including its base64 and percent-encoded forms, is redacted from
+  command output, events and transcripts. A `secret_store` grant now resolves through the host's
+  secret provider on blocking tool calls instead of failing as unavailable. The confined-command
+  `GH_CONFIG_DIR` stand-in drops `!` aliases and the pager, browser, editor and socket keys. `gh` read
+  subcommands now count as workspace reads for tool-batch phase planning, including after a global
+  `-R`; writes and unknown subcommands do not.
+- **Startup observations use the actual dispatch boundary.** Deterministic
+  mocks and served calls publish the same inference start and completion
+  events as live provider requests. A refused request publishes no dispatch.
+  Host adapters can also observe the operating system's process birth on a
+  monotonic clock, including work before the executable entry point, with
+  the native clock resolution retained.
+- The harn-target collector now removes idle entries on Linux hosts. It reads
+  `/proc` and Cargo's build locks instead of an unprivileged `lsof`, which could
+  never read root's processes and so kept every entry.
+- **A workspace opened through a symlink stays inside itself.** The command risk scan now treats a path as inside a
+  workspace root when either its written or its resolved spelling sits under the root. A cwd reported by
+  `git rev-parse --show-toplevel` or `pwd -P` (for example `/private/tmp/project` for a root declared as
+  `/tmp/project`) no longer earns an `outside_workspace` label and an approval hold.
+
+## v0.10.186
+
+### Breaking
+
+- **Run-tape tool records include runtime store mutations (#10793).** Branches
+  replay ordered store writes before continuing live execution, preserve them
+  across later writes, and leave the recording's store unchanged. Tape format 6
+  requires a new full recording for exact branching; older tapes remain readable.
+
+  Migration: Rust consumers constructing `TapeRecordKind::ToolCall` must include
+  `store_changes`; use `None` for legacy records without mutation evidence.
+  Exhaustive matches must bind that field or use `..`. Let the runtime record a
+  new full tape to obtain measured store operations for exact branching.
+- Run-tape branches replay reminder revocation and expiry state alongside
+  transcript changes. Later revocation requests retain their recorded status;
+  incompatible initial state refuses before file or transcript effects.
+  Unaccounted reminder retirements make the dispatch unservable.
+
+  Migration: Rust consumers must handle the new `TranscriptChange::Reminders`
+  variant in exhaustive matches. Record a new full tape in format 7 for exact
+  branching. Older tapes remain readable for inspection.
+- Run-tape branches refuse tool dispatches that create or use session-scoped
+  dynamic permission grants before replaying their effects. Serving those calls
+  without their grant cache could ask for approval again in the live tail.
+  Live permission decisions and replay of once-only grants are unchanged.
+
+  ## Migration
+
+  Record a new full tape with format 8 before branching. Older formats remain
+  inspectable but lack evidence that the session permission checks ran.
+- `ApiServerConfig::with_host_responder` now takes an
+  `Arc<dyn ApiHostResponderBinder>` instead of a single responder, so each
+  session is answered for its own workspace root.
+
+  Migration: implement `HostResponderBinder::bind(&self, session_root)` to return
+  the `Arc<dyn HostResponder>` for that root (cache by root if building one is
+  expensive) and pass the binder where the responder was passed.
+- `harn_modules::ReferenceIndex::file_edges()` was removed. File-level reference
+  graphs now collect edges directly without constructing a positional index.
+
+  Migration: replace `index.file_edges()` with
+  `harn_modules::file_reference_edges(&graph, &sources)`. Retain the module graph
+  and parsed sources used to build the positional index, or rebuild them with
+  `harn_modules::build_for_reference_index` when they are no longer available.
+- **Replay validates complete fixture expectations (#10955).** Replay checks both recorded runs
+  and the declared match or drift expectation in trace fixtures, rejects unknown fixture kinds,
+  and reports how many expectations it compared.
+
+  Migration: Rust consumers constructing `ReplayEvalReport` literals must provide the new
+  `expectations_compared` field with the number of predicates actually evaluated. Consumers
+  obtaining reports from the replay evaluator need no change.
+
+### Added
+
+- Add `preflight_inference_admission` for embedders and use it in `harn provider admission`
+  to report typed, value-free provider endpoint configuration errors before inference-boundary decisions.
+- An ACP server embedder can answer `host/capabilities` and `host/call` itself
+  with `AcpServerConfig::with_host_responder`. The server binds a responder to
+  each session's workspace root for every prompt turn, so a session is never
+  answered with another session's workspace, and its host requests never reach
+  the connected client. A standard editor that is not a host can therefore run a
+  full turn over stdio or WebSocket. The agents API server uses the same binder
+  through the ACP bridge instead of a separate interception path.
+- Agents API embedders can supply a typed environment declaration for new and
+  restored sessions. HTTP callers cannot override it; default sessions stay isolated.
+- The website now offers a localized contribution page with ways to report issues, improve code and documentation,
+  join discussions, and leave an optional tip. Page titles and descriptions follow language changes without reloading.
+- Export the crystallization bundle JSON Schema and generated host bindings from the manifest's wire types,
+  including replay evidence and promotion safety fields.
+- Crystallization evidence cards now carry each session's command ledger (bounded, redacted commands with exit codes), and
+  the curator's `inspect_session_evidence` reads a bounded, redacted transcript from the session store through the new
+  `pattern_learning_session_transcript`, so it works for sessions that ended in earlier processes.
+
+  Credential redaction consumes the whole concatenated shell value. Uncertain
+  shell expansion suppresses the remaining command rather than leaking a suffix.
+- The crystallization curator's `scaffold_harn_tool` accepts `steps`, a learned command sequence, and returns a complete,
+  tested MCP tool that runs it in order with failure receipts. It also returns the same sequence as one shell line
+  (`artifact.verify_command`) that a host can adopt as the project's verifier. The renderer is
+  `crystallization_command_sequence_package`.
+
+  Template insertion preserves literal arguments, directories and descriptions,
+  including text that resembles a template placeholder.
+  Inserted data is decoded at runtime, preserving interpolation-like text,
+  backslashes and control characters without interpreting them as Harn source.
+- `crystallization_curate` accepts `declared_checks`, the checks the repository states, and rejects a learned verifier
+  unless it includes at least one declared test check word for word from its directory. Command-sequence steps take
+  an optional repository-relative `cwd`.
+  `scaffold_harn_tool` accepts optional `fast_steps` and returns the quick in-progress check as `fast_verify_command`
+  beside the full `verify_command`.
+- `crystallization_curate` accepts `installed` (the host's installed capabilities) and never stages a proposal that
+  matches one by name or verifier line. With `require_new_evidence: true`, it skips the model call when all evidence
+  was already reviewed or when every unseen session only ran installed checks and passed.
+
+### Changed
+
+- Hyperbolic uses its current text inference endpoint and requests final streaming token counts.
+  Completion calls use the chat endpoint because native base completions are no longer offered.
+  Existing integrations need a current `sk_live_` key and a model ID from Hyperbolic's current catalog;
+  cache accounting remains unverified.
+- Fetch independent locked package sources concurrently while preserving atomic package generation publication.
+- **A held-back tool call reads as routine ordering.** When a response mixes read and write calls, the call the agent
+  loop holds for the next turn now tells the model in plain words that nothing went wrong and that it should not
+  mention the hold in its reply. The old note named internal phases and read like an error, and models repeated it
+  to users.
+- Speed up restoring a workspace reference graph by avoiding duplicate file-level edges while preserving every positional
+  reference for editor operations.
+
+### Removed
+
+- **Provider catalog:** remove GitHub Models and its pending accounting and
+  data-control audit entries after GitHub
+  [retired the service on July 30, 2026](https://github.blog/changelog/2026-07-01-github-models-is-being-fully-retired-on-July-30-2026/)
+  (#7320).
+
+### Fixed
+
+- Release promotion now rejects candidate and consumer rehearsal evidence from different build attempts or incomplete
+  artifact inventories.
+- On Unix, interrupted runs retire foreground commands and their children before exiting.
+- Worker snapshots now resolve their storage folder through the session environment,
+  so replay branches remap the same folder that worker persistence uses.
+- A run-tape branch now replays the prefix of an agent that warms the code index before its first model call.
+  Code-index maintenance of the restored workspace (`rebuild`, `reindex_file`, `add_readonly_roots`, agent and
+  lock bookkeeping) runs in the prefix, and reads of command handles and their output are served from the
+  recording. A rebuild of a root outside the restored workspace, the source-writing refactors, and host leases
+  are still refused.
+- Avoid repeated definition resolution while indexing a file's references.
+- Keep workspace code references available when a project imports standard-library or external modules.
+- Speed up reference indexing for large source files.
+- Structured model calls no longer retry content-policy, authentication or context refusals as unsupported output formats.
+  Invalid-request format rejections retain the validated text fallback.
+- ACP servers read project provider settings without installing unrelated packages
+  before accepting requests. Package validation remains part of session execution.
+- Embedded ACP host responders no longer block message routing while binding to a
+  session. In-process host answers use the same deadlines as client callbacks,
+  including the timeout override and the exception for human input. Workspace
+  reanchoring during a turn takes effect for both the responder and the filesystem
+  on the next turn.
+- Agents API tasks now report runtime and provider failures as failed tasks,
+  preserving the runtime diagnostic instead of reporting successful completion.
+- Cancelled native tool calls now receive a repair message before the terminal record and a matching raw tool-result
+  receipt, including when cleanup outlives the original transcript scope. The receipt identifies the harness as its author,
+  so transcript readers can distinguish cancellation repair from a tool's own failure.
+- Keep JSON run terminal state on the heap so nested CLI execution futures do not multiply its stack cost.
+  Managed commands still retire before the terminal event.
+- Reject missing, malformed and unknown consent decisions before command or tool
+  execution, using one shared decision contract while preserving explicit approval
+  and automatic opt-out.
+- `crystallization_curate` now returns `usage`, the curator run's physical provider ledger (tokens and cost). Hosts that
+  read usage from the outcome previously found none and reported an empty record. It is absent when the run measured
+  nothing.
+- Crystallization compares declared checks using literal shell arguments and
+  working-directory scopes. Printing a check, running it after an earlier
+  directory change, or using unsupported shell context cannot satisfy admission.
+  `std/command.command_sequence_plan` exposes the same structural observation
+  without executing commands.
+  Incomplete curator runs keep their evidence eligible for a later review.
+  Command evidence, declared checks and verifier deduplication preserve whitespace
+  inside literal arguments and directory names.
+- Pre-push checks honor `HARN_BIN_NO_BUILD=1`: they refuse when no proven worktree runtime is available,
+  without compiling, bootstrapping a compiler wrapper, or signing a replacement.
+  Proven runtimes still run the required reader census.
+- Keep references inside interpolated strings in the workspace symbol graph,
+  including nested expressions and locally shadowed names.
+- Native release qualification measures CPU, memory, and active jobs on owned
+  Macs before compiling, including when their persistent target is cold.
+- Registered host hooks can run for child agents started inside a tool handler.
+  Hooks retain their registration context, so tool-registered hooks remain restricted
+  and the parent tool's restrictions resume after the callback, including when the hook fails.
+- **Confined children run a project's installed pinned pnpm.** When `package.json` pins `packageManager: "pnpm@X"`
+  and X is installed under `$PNPM_HOME/.tools`, it comes first on the child's PATH, so `pnpm` no longer needs the
+  registry to switch versions and works without network.
+- Keep Linux command supervision working when the running host executable is replaced during a session.
+- Provider credential resolution failures preserve their structured authentication class and local origin, so callers
+  can offer setup recovery instead of treating them as generic runtime errors.
+- Correct Python import bindings in undefined-name diagnostics, including future
+  features and aliases.
+- Release rehearsals preserve consumer pairings from included feature commits
+  and bind promotion to the measured source and artifacts. Ordinary canaries keep
+  their own source pairing instead of inheriting historical release pairings.
+- Release pull request rehearsals honor the paired consumer declared in the
+  pull request description even before a CLI artifact is available.
+- Replay oracle checks now refuse to pass when the allowlist removes every comparable value, including in shadow comparisons.
+- Run views and reports preserve unavailable model-call timing as null, including session totals.
+  A measured zero remains zero, and combining measured timing with unavailable timing keeps the total unavailable.
+- Content search skips binary files by default; callers can opt into binary
+  search independently of project ignore rules.
+- Complementary reviewer selection now excludes models that cannot generate text.
+- Saved-session run reports hash the recorded tool arguments when a provider message arrives before the execution
+  record, keeping different commands distinct in tool fixtures.
+
+## v0.10.185
+
+### Breaking
+
+- `AcpServerConfig` is now `#[non_exhaustive]` and gains the
+  `launcher_session_environment` field, so later launch inputs can be added
+  without another breaking release.
+
+  Migration: Rust embedders that built `AcpServerConfig` with a struct literal
+  must construct it with `AcpServerConfig::new(pipeline)` and the `with_*`
+  builder methods (for example `with_launcher_session_environment`). Reading and
+  assigning public fields is unchanged.
+- Managed services can report an unavailable included allowance without misclassifying it as a provider account billing
+  failure. The refusal stops without retrying and preserves the service's explanation and contact remedy separately
+  from transport diagnostics.
+
+  Migration: Rust callers constructing `AcpPromptFailureFacts` exhaustively must initialize the new `message` and
+  `detail` fields to `None`, or use `..AcpPromptFailureFacts::default()`. Hosts should regenerate protocol bindings
+  and handle the new `managed_allowance_unavailable` terminal class by showing the service message without retrying.
+- Russian is available across CLI output, the browser app host, portal, website interface, and VS Code extension.
+
+  Migration: Rust consumers matching `harn_hostlib::localization::Locale` exhaustively
+  must handle the new `Locale::Russian` variant. Its canonical language identifier is `ru`.
+
+### Added
+
+- **A standard ACP editor can open a session on `harn serve acp`.** The new
+  `--session-environment inherited|isolated` flag states, at launch, the
+  environment policy for a client whose `session/new` names none. Without the
+  flag such a request is still refused with `environment_policy.missing`. A
+  policy the client sends always wins, and the `session/new` result now reports
+  the policy that applied as `environmentPolicy: {kind, source}`.
+
+### Changed
+
+- `code_index.rename_symbol` on the syntax-tree backend now renames a symbol
+  declared inside a body: a TypeScript or JavaScript `const`, `let`, class,
+  type, interface or enum in a block, a function declared directly in a
+  function body, a Rust item in a block or a private item of an inline module,
+  and a Python def or class in a function body. Only that scope is rewritten,
+  so same-named declarations elsewhere no longer force `ambiguous_symbol`. Any
+  spelling in the scope that the proof cannot bind, such as a shadowing
+  parameter, a shorthand property or a binding macro, still refuses the whole
+  rename without writes. TypeScript `typeof name` in a type is now a proven
+  reference.
+
+### Fixed
+
+- Keep generated standard library archive bindings valid when cached build outputs move between checkouts.
+
 ## v0.10.184
 
 ### Breaking

@@ -31,6 +31,16 @@ The release GitHub App writes the branch and tags. Its token needs
 `contents: write` and `workflows: write`, because green moves across commits
 that change workflow files.
 
+## Release build proof
+
+Two repository variables keep the signed release build exercised between
+releases:
+
+| Variable | Effect |
+| --- | --- |
+| `GREEN_SOURCE_CANDIDATE_HOURS` | Each pass dispatches a `build-release-binaries.yml` source candidate of `main`'s tip when none is running, the tip has none, and the last one started at least this many hours ago. Unset starts nothing. |
+| `GREEN_REQUIRES_SOURCE_CANDIDATE` | When `true`, a run moves green only if its commit has a successful candidate. Commits without one are held and named in the pass summary, and older runs are considered. |
+
 ## Checkpoint record
 
 The last line of each `green-*` tag message is one JSON object:
@@ -50,7 +60,7 @@ git cat-file -p green-20261017T120000Z-123 | tail -n 1 | jq .
 | Consumer | Reads green as |
 | --- | --- |
 | `bump-release.yml` and `scripts/open_release_pr.sh` | The release pull request is prepared from a checkout of `green`. The opener refuses a checkout that no `green-*` tag names. The pull request still targets `main`. |
-| `promote-release.yml` (`plan` job) | A version commit must be contained in `green`. Its candidate run can finish before its own CI run, so `plan` waits up to 90 minutes for green to reach it. Ordinary commits, which promote nothing, never read green. |
+| `promote-release.yml` (`plan` job) | The commit a maintainer names must be contained in `green`. Its candidate run can finish before its own CI run, so `plan` waits up to 90 minutes for green to reach it. |
 | `consumer-canary.yml` | A scheduled or dispatched run without `source_revision` rehearses green's tip. The `decide` job resolves it once and later jobs read its output. |
 
 Promotion keeps its separate per-job full-suite check at the release commit

@@ -157,7 +157,6 @@
             "kind": {
               "enum": [
                 "agent_loop_stall_warning",
-                "agent_scratchpad_reorganization",
                 "anchor_changed",
                 "boundary_failure",
                 "budget_circuit_breaker",
@@ -166,7 +165,6 @@
                 "cache_miss",
                 "capability_gap",
                 "code_librarian_query_nl_fallback",
-                "compass_routing_decision",
                 "composition_child_call",
                 "composition_child_result",
                 "composition_error",
@@ -210,7 +208,6 @@
                 "session_closed",
                 "session_health",
                 "step_judge_decision",
-                "structural_validator_decision",
                 "subagent_join",
                 "subagent_stop",
                 "tool_batch_disposition",
@@ -334,7 +331,8 @@
             "agent_loop_protocol_failure",
             "parse_dropped",
             "generic_throw",
-            "managed_spend_paused"
+            "managed_spend_paused",
+            "managed_allowance_unavailable"
           ]
         },
         "message": { "type": "string" },
@@ -390,10 +388,13 @@
             "agent_loop_protocol_failure",
             "parse_dropped",
             "generic_throw",
-            "managed_spend_paused"
+            "managed_spend_paused",
+            "managed_allowance_unavailable"
           ]
         },
         "category": { "type": "string" },
+        "message": { "type": "string" },
+        "detail": { "type": "string" },
         "kind": { "type": "string" },
         "reason": { "type": "string" },
         "origin": { "type": "string" },
@@ -808,8 +809,7 @@
               "mode", "strategy", "snapshotAssetId", "reason", "receiptId", "schemaVersion",
               "engineStrategy", "requestedStrategy", "resolvedThresholdTokens", "thresholdSource",
               "hardLimitTokens", "archivedMessages", "estimatedTokensBefore", "estimatedTokensAfter",
-              "instructionMode", "instructionSource", "compactionPolicy", "recap", "sourceMeasurement",
-              "classification"
+              "instructionMode", "instructionSource", "compactionPolicy", "recap", "sourceMeasurement"
             ],
             "additionalProperties": true,
             "properties": {
@@ -826,8 +826,7 @@
               "resolvedThresholdTokens": { "type": ["integer", "null"], "minimum": 0 },
               "thresholdSource": { "type": ["string", "null"] },
               "hardLimitTokens": { "type": ["integer", "null"], "minimum": 0 },
-              "sourceMeasurement": {},
-              "classification": {}
+              "sourceMeasurement": {}
             }
           } }
         }

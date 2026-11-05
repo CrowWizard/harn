@@ -445,8 +445,6 @@ pub type AgentExecutionSpec = {
    * convicted. Default empty, which checks nothing and costs nothing.
    */
   require_artifacts?: list<string>,
-  /** Add Harn's typed `task_complete` claim tool. Default off. */
-  completion_tool?: bool,
   exit_when_verified?: bool,
   deadline_ms?: int,
   verify_completion?: any,
@@ -458,7 +456,6 @@ pub type AgentExecutionSpec = {
   llm_caller?: any,
   llm_caller_transport?: LlmCallerTransport,
   tool_caller?: any,
-  structural_validator?: any,
   input_guardrail?: any,
   pre_turn_scope_classifier?: any,
   context_callback?: any,
@@ -570,7 +567,6 @@ pub type AgentContextSpec = {
   /** Root for the canonical durable session store used by this run. */
   root?: string,
   transcript_projection?: string | dict,
-  scratchpad?: bool | dict,
   timestamp_messages?: bool,
   prompts?: dict,
   prompt_overrides?: dict,
@@ -652,8 +648,6 @@ pub type AgentPresetOptions = AgentSpec \
   stages?: list,
   verification_steps?: list,
   verification?: list,
-  lane_policy?: any,
-  overlay_policy?: any,
   workflow_learning_eligibility?: string,
 }
 
@@ -681,14 +675,6 @@ pub type AgentPresetOptions = AgentSpec \
  * even though the loop never reads them. Same shape of debt as
  * `allowed_tools`: the cleaner end state is for the worker request to carry
  * them on its own channel.
- */
-/**
- * Preset-pack lane rows, lowered by `std/agent/lanes`. `agent_preset`
- * copies it into the options it returns.
- */
-/**
- * Preset-pack overlay rows, lowered by `std/agent/overlays`. `agent_preset`
- * copies it into the options it returns.
  */
 /**
  * Whether this run's transcript may feed workflow learning. Read by the host

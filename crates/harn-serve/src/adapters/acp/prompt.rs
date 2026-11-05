@@ -263,6 +263,30 @@ impl AcpServer {
                     return;
                 }
             };
+        let host_responder = if let Some(binder) = self.host_responder.clone() {
+            let bind_root = project_root.clone();
+            let binding =
+                async move { tokio::task::spawn_blocking(move || binder.bind(&bind_root)).await };
+            let bound = tokio::select! {
+                biased;
+                () = cancellation.wait_cancelled() => {
+                    self.turn_ended(id, &session_id, reply, cancelled_prompt_result(None));
+                    return;
+                }
+                result = binding => result.unwrap_or_else(|_| {
+                    Err("Embedder host responder binder failed".to_string())
+                }),
+            };
+            match bound {
+                Ok(responder) => Some(responder),
+                Err(message) => {
+                    self.send_prompt_error(id, &format!("Host responder unavailable: {message}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let turn_budget = llm_spend
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -400,7 +424,16 @@ impl AcpServer {
             }
         };
         let compile_ms = compile_started.elapsed().as_millis() as u64;
-        let mode_policy = modes::ModePolicyScope::new(&current_mode_id, &self.sandbox);
+        if let Some(reason) = self.child_egress.startup_failure() {
+            let mut message = format!("Commands have no network path: {reason}");
+            if let Err(error) = self.clear_active_prompt_transport(&session_id).await {
+                message.push_str(&format!("; failed to persist agent events: {error}"));
+            }
+            self.send_prompt_error(id, &message);
+            return;
+        }
+        let mode_policy = modes::ModePolicyScope::new(&current_mode_id, &self.sandbox)
+            .with_child_egress(&self.child_egress);
         // Both scoped spans are boxed before they are awaited. `Scoped` holds the
         // wrapped future inline, so keeping these on the stack would add the whole
         // prompt body's state to this frame, which a nested descent re-enters.
@@ -472,11 +505,31 @@ impl AcpServer {
         if checkpoint_reserved {
             if let Some(boundary_id) = prompt.correlation.message_id.as_deref() {
                 // A failed capture must not prevent the person's prompt running.
-                self.sessions
+                // The scan runs off this thread so other requests keep moving;
+                // only this turn waits for it.
+                let tracking = self
+                    .sessions
                     .get(&session_id)
                     .expect("admitted session")
                     .checkpoint_tracking
-                    .capture_boundary(&session_id, boundary_id, &cwd, &store_scope, true);
+                    .clone();
+                let (owner_id, boundary, root, scope) = (
+                    session_id.clone(),
+                    boundary_id.to_string(),
+                    cwd.clone(),
+                    store_scope.clone(),
+                );
+                let capture = harn_vm::orchestration::run_blocking_with_ambient({
+                    let tracking = tracking.clone();
+                    move || tracking.capture_boundary(&owner_id, &boundary, &root, &scope, true)
+                })
+                .await;
+                if let Err(error) = capture {
+                    tracking.fail(
+                        boundary_id,
+                        format!("checkpoint capture did not finish: {error}"),
+                    );
+                }
             }
         }
         #[cfg(not(feature = "hostlib"))]
@@ -510,6 +563,7 @@ impl AcpServer {
             cancellation: cancellation.clone(),
             script_name: std::sync::Mutex::new(String::new()),
             assistant_state: std::sync::Mutex::new(VisibleTextState::default()),
+            host_responder,
         });
         let host_bridge = Arc::new(
             harn_vm::bridge::HostBridge::from_parts_with_writer_and_control(
@@ -598,6 +652,7 @@ impl AcpServer {
             "pipeline":source_path.as_ref().map(|path|path.display().to_string()).unwrap_or_else(||"<inline>".into()),
         })));
         let profile_turn = self.begin_profile_turn(&session_id);
+        let builtin_profile = (profile_turn != 0).then(harn_vm::builtin_profile::enable);
         let host_bridge_for_response = host_bridge.clone();
         let runtime_configurator = self.runtime_configurator.clone();
         let execution = runtime_configurator.run_prompt(
@@ -611,6 +666,8 @@ impl AcpServer {
                 cancelled: &cancellation.cancelled,
             },
             Box::pin(store_scope.run(mode_policy.run(Box::pin(async {
+                // A person asking again is the signal to try a route that was failing.
+                let _prompt_guard = harn_vm::llm::begin_interactive_prompt(&session_id);
                 let _budget_guard = turn_budget.install_session_turn(llm_spent_usd.unwrap_or(0.0));
                 let _spend_recorder = SessionSpendRecorder::new(
                     llm_spend.clone(),
@@ -643,6 +700,7 @@ impl AcpServer {
         );
         let result = event_transport.scope(execution).await;
         self.finish_profile_turn(&session_id, profile_turn);
+        drop(builtin_profile);
         let sink_flush_error = self.clear_active_prompt_transport(&session_id).await.err();
         let turn_spent_usd = llm_spent_usd.and_then(|_| {
             llm_spend

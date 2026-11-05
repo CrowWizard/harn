@@ -568,6 +568,19 @@ async fn acp_profile_json_appends_one_line_per_prompt_turn() {
         assert_eq!(entries[0]["turn"], 1);
         assert_eq!(entries[1]["turn"], 2);
         assert!(entries[0]["rollup"]["by_kind"].is_array());
+        for entry in &entries {
+            let builtins = entry["rollup"]["top_builtins"]
+                .as_array()
+                .expect("builtin attribution");
+            let printed = builtins
+                .iter()
+                .find(|builtin| builtin["name"] == "harness.stdio.println")
+                .unwrap_or_else(|| panic!("executed builtin missing from profile: {entry}"));
+            assert_eq!(
+                printed["calls"], 1,
+                "each turn must start a fresh recording"
+            );
+        }
 
         drop(request_tx);
         server.await.expect("ACP channel server task");
@@ -1020,6 +1033,7 @@ async fn acp_bridge_routes_session_request_permission_response() {
         cancellation: SessionCancellation::default().prepare_prompt(),
         script_name: Mutex::new(String::new()),
         assistant_state: Mutex::new(VisibleTextState::default()),
+        host_responder: None,
     });
 
     let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(

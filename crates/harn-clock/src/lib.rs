@@ -12,7 +12,7 @@
 pub mod test_support;
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -50,8 +50,19 @@ pub trait Clock: Send + Sync + fmt::Debug {
 /// Convert an `OffsetDateTime` to Unix epoch milliseconds. The division
 /// happens in `i128` so timestamps past April 2262 — where nanoseconds
 /// exceed `i64::MAX` — don't silently corrupt when cast.
+///
+/// Floors toward negative infinity so pre-epoch instants stay monotonic with
+/// post-epoch ones (`-1ns` is `-1ms`, not `0ms`).
 pub fn offset_datetime_to_ms(ts: OffsetDateTime) -> i64 {
-    (ts.unix_timestamp_nanos() / 1_000_000) as i64
+    ts.unix_timestamp_nanos().div_euclid(1_000_000) as i64
+}
+
+/// Milliseconds elapsed from `since_ms` to `now_ms`, clamped to zero when
+/// `since_ms` is ahead of `now_ms` (clock skew, restored backup, backward
+/// clock step). A bare `as u64` on the signed difference wraps a negative age
+/// to ~1.8e19, which every "older than N" check then treats as ancient.
+pub fn elapsed_ms(now_ms: i64, since_ms: i64) -> u64 {
+    u64::try_from(now_ms.saturating_sub(since_ms)).unwrap_or(0)
 }
 
 /// Convenience: current wall-clock millis since UNIX_EPOCH.
@@ -112,14 +123,18 @@ pub fn system_now_unix_seconds_text() -> String {
 /// Production clock. Reads `OffsetDateTime::now_utc()` and
 /// `tokio::time::sleep`. Honors `tokio::time::pause()` for sleep-driven
 /// scheduling but `now_utc` always returns true wall time.
-pub struct RealClock {
-    monotonic_origin: tokio::time::Instant,
-}
+///
+/// Every instance reads monotonic time from one process-wide origin. Process-
+/// global state compares readings taken through different instances: a route
+/// breaker window opened during one prompt is checked during the next prompt,
+/// through that prompt's own clock.
+#[derive(Default)]
+pub struct RealClock;
 
-impl Default for RealClock {
-    fn default() -> Self {
-        Self::new()
-    }
+/// The origin shared by every [`RealClock`] and by clock-free readers.
+pub fn process_monotonic_origin() -> std::time::Instant {
+    static ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
+    *ORIGIN.get_or_init(std::time::Instant::now)
 }
 
 impl fmt::Debug for RealClock {
@@ -130,9 +145,9 @@ impl fmt::Debug for RealClock {
 
 impl RealClock {
     pub fn new() -> Self {
-        Self {
-            monotonic_origin: tokio::time::Instant::now(),
-        }
+        // Pin the origin now so a clock's first reading is never its origin.
+        process_monotonic_origin();
+        Self
     }
 
     /// Convenience: wrap in an `Arc` for handing to consumers.
@@ -148,8 +163,18 @@ impl Clock for RealClock {
     }
 
     fn monotonic_ms(&self) -> i64 {
-        let elapsed = tokio::time::Instant::now().saturating_duration_since(self.monotonic_origin);
-        elapsed.as_millis() as i64
+        let origin = tokio::time::Instant::from_std(process_monotonic_origin());
+        let now = tokio::time::Instant::now();
+        // A paused test runtime created before the origin was pinned reads
+        // slightly earlier than it. Round down on both sides of the origin so
+        // the difference of two readings stays exact.
+        match now.checked_duration_since(origin) {
+            Some(elapsed) => elapsed.as_millis() as i64,
+            None => {
+                let behind = origin.saturating_duration_since(now);
+                -(behind.as_nanos().div_ceil(1_000_000) as i64)
+            }
+        }
     }
 
     async fn sleep(&self, duration: Duration) {
@@ -405,8 +430,33 @@ impl Clock for RecordedClock {
 mod tests {
     use super::*;
 
+    #[test]
+    fn elapsed_ms_clamps_a_future_start_to_zero() {
+        assert_eq!(elapsed_ms(5_000, 1_000), 4_000);
+        assert_eq!(elapsed_ms(5_000, 10_000), 0);
+        assert_eq!(elapsed_ms(i64::MIN, i64::MAX), 0);
+    }
+
+    #[test]
+    fn pre_epoch_instants_floor_to_milliseconds() {
+        let at = |ns: i128| OffsetDateTime::from_unix_timestamp_nanos(ns).unwrap();
+        assert_eq!(offset_datetime_to_ms(at(-1)), -1);
+        assert_eq!(offset_datetime_to_ms(at(-1_500_000)), -2);
+        assert_eq!(offset_datetime_to_ms(at(1_500_000)), 1);
+    }
+
     fn epoch() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn real_clocks_created_apart_read_the_same_monotonic_time() {
+        let earlier = RealClock::new();
+        let start = earlier.monotonic_ms();
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let later = RealClock::new();
+        assert_eq!(earlier.monotonic_ms() - start, 50);
+        assert_eq!(later.monotonic_ms(), earlier.monotonic_ms());
     }
 
     #[tokio::test]

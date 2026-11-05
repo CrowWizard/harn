@@ -43,6 +43,15 @@ use crate::workspace_anchor::{
 };
 
 mod changed_paths;
+mod continuation;
+pub(crate) use continuation::{
+    cached_transcript, has_continuation_checkpoint, remember_flushed_transcript,
+    validate_continuation_checkpoint, ClosedTranscript,
+};
+pub use continuation::{
+    load_closed_session_continuation, prepare_closed_session_continuation,
+    ClosedSessionContinuation,
+};
 mod health;
 pub use changed_paths::{
     clear_all_session_changed_paths, clear_session_changed_paths, record_session_changed_path,
@@ -80,7 +89,6 @@ pub const DEFAULT_TRANSCRIPT_MESSAGE_CAP: usize = 4096;
 /// Default cap on retained transcript audit events per session. Events
 /// include message-derived entries plus orchestration lifecycle records.
 pub const DEFAULT_TRANSCRIPT_EVENT_CAP: usize = 32768;
-pub const MAX_SCRATCHPAD_BYTES: usize = 16 * 1024;
 #[cfg(debug_assertions)]
 const CACHE_STABLE_SYSTEM_PROMPT_DIAGNOSTIC: &str = "HARN-CACHE-001";
 
@@ -191,6 +199,7 @@ enum SessionAdmissionRole {
 }
 
 pub struct SessionState {
+    continuation_checkpoint: Option<continuation::TranscriptCheckpoint>,
     admission_role: SessionAdmissionRole,
     transcript_recording_ready: bool,
     retention: Arc<()>,
@@ -247,10 +256,6 @@ pub struct SessionState {
     /// (epic #2208). `None` until a host opens the session with one or
     /// the ACP `reanchor` / `add_root` primitives populate it.
     pub workspace_anchor: Option<WorkspaceAnchor>,
-    /// Small session-local working memory rendered into agent prompts by the
-    /// Harn stdlib agent loop. This is live state, not a replayed message.
-    pub scratchpad: Option<VmValue>,
-    pub scratchpad_version: u64,
     pub goal: SessionGoalState,
     /// A VM fork's inherited goal awaits its first canonical journal.
     pub(crate) goal_pending_fork: bool,
@@ -340,7 +345,6 @@ mod live_clients;
 mod metadata;
 mod retention;
 mod runtime_store;
-mod scratchpad;
 pub(crate) mod session_event;
 mod text_tool_call_seq;
 mod transcript_lifecycle;
@@ -349,7 +353,7 @@ mod workspace_roots;
 
 pub(crate) use metadata::prepare_workspace_mount_verified;
 
-pub(crate) use text_tool_call_seq::next_text_tool_call_seq_for_parse;
+pub(crate) use text_tool_call_seq::{next_text_tool_call_seq_for_parse, restore_text_call_seq};
 use text_tool_call_seq::{
     next_text_tool_call_seq_from_json_messages, next_text_tool_call_seq_from_transcript,
 };
@@ -378,7 +382,6 @@ use runtime_store::{
     clear_unknown_host_event_warnings, retire_all_session_states, retire_session_state,
     DEFAULT_TRANSCRIPT_BUDGET_POLICY, SESSIONS, SESSION_CAP,
 };
-pub use scratchpad::*;
 pub(crate) use transcript_lifecycle::settle_assistant_publication;
 pub use transcript_lifecycle::*;
 pub(crate) use transcript_lifecycle::{
@@ -520,6 +523,7 @@ pub fn set_transcript_budget_policy(
 /// Clear the calling thread's session store and its process-global sidecars.
 pub fn reset_session_store() {
     crate::run_tape::note_session_store_reset();
+    *active_session_runtime().closed_transcript.write() = None;
     let retired = SESSIONS.with(|s| retire_all_session_states(&mut s.borrow_mut()));
     let mut owned_session_ids: HashSet<String> = retired
         .into_iter()
@@ -1170,8 +1174,6 @@ fn fork_with_retention(
         state.actor_chain = src.actor_chain.clone();
         state.workspace_anchor = src.workspace_anchor.clone();
         state.workspace_policy = src.workspace_policy.clone();
-        state.scratchpad = src.scratchpad.clone();
-        state.scratchpad_version = src.scratchpad_version;
         state.goal = src.goal.clone();
         state.goal.turn = SessionGoalTurn::Idle;
         state.goal_pending_fork = true;
