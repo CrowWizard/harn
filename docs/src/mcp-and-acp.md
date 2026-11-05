@@ -741,7 +741,7 @@ to `inherited`. The result reports the applied policy as
     "grants": [
       {
         "name": "provider_key",
-        "source": {"env": {"var": "OPENAI_API_KEY"}},
+        "source": {"secret_env": {"var": "OPENAI_API_KEY"}},
         "expose_as_env": "OPENAI_API_KEY",
         "expose_to": "in_process"
       },
@@ -755,6 +755,11 @@ to `inherited`. The result reports the applied policy as
   }
 }
 ```
+
+The `secret_env` source snapshots a launcher variable like `env` and declares
+the value a credential, so it is redacted from the output of a command it is
+handed to; a plain `env` value is not. A value that only reaches the process,
+like this `in_process` key, is never handed to a command and is not filtered.
 
 `expose_to: "in_process"` lets the session's own model calls authenticate with
 the key while no command, MCP stdio server, or ACP provider the session starts
